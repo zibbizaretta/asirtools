@@ -58,7 +58,7 @@ def convert_value(val, unit_choice):
         return val
 
 # --- Streamlit Arayüzü ---
-st.set_page_config(page_title="Asir Tools - Excel Pro", layout="wide")
+st.set_page_config(page_title="Asir Tools", layout="wide")
 st.title("📊 Excel Veri Dönüştürücü")
 
 # Seçenekler Paneli (Sidebar)
@@ -178,4 +178,5 @@ if uploaded_file:
         st.info("Lütfen Excel dosyanızdaki sütun başlıklarını kontrol edin.")
 else:
     st.info("Lütfen başlamak için bir Excel dosyası yükleyin.")
+
 
