@@ -3,6 +3,7 @@ import math
 import re
 import io
 import streamlit as st
+from openpyxl.styles import Alignment # 👈 Hizalama (Alignment) için gerekli modül
 
 # --- Sabitler ---
 KG_TO_LBS = 2.20462
@@ -86,19 +87,19 @@ if uploaded_file:
         processed_data = []
         unit_label = f"({unit_choice})"
         
-        # Kolon Başlıkları (İstediğin sıralama ve boş kolon dahil)
+        # Kolon Başlıkları
         output_headers = [
             'CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION',
             'Feature 1', 'Feature 2', 'Feature 3', 'Feature 4', 'Feature 5',
             'IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', 
-            'WEIGHT (LBS)', # 👈 Product Size'ın hemen önünde
+            'WEIGHT (LBS)', 
             f'PRODUCT SIZE - X {unit_label}', f'PRODUCT SIZE - Y {unit_label}', f'PRODUCT SIZE - Z {unit_label}',
             'CARTON WEIGHT (LBS)',
             f'PACKAGING SIZE - X {unit_label}', f'PACKAGING SIZE - Y {unit_label}', f'PACKAGING SIZE - Z {unit_label}'
         ]
 
         for index, row in df.iterrows():
-            # 1. Boş satır kontrolü (CODE sütunu boşsa atla)
+            # 1. Boş satır kontrolü
             code_val = str(row.get('CODE', '')).strip()
             if not code_val or code_val.lower() == 'nan':
                 continue
@@ -121,7 +122,6 @@ if uploaded_file:
             if len(feat_list) >= 5:
                 feature_cols[4] = "\n".join(feat_list[4:])
             
-            # Made in Türkiye ekleme mantığı
             if not any(MADE_IN_TURKEY in str(f) for f in feature_cols):
                 for i in range(5):
                     if feature_cols[i] == "":
@@ -139,15 +139,15 @@ if uploaded_file:
             except:
                 c_lbs = p_lbs = row.get('WEIGHT (Kg)', '')
 
-            # 5. Satırı Listeye Ekle (İstediğin kolon sırasıyla)
+            # 5. Satırı Listeye Ekle
             processed_row = [
                 code_val, row.get('EAN CODE', ''), 
                 str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', ''),
                 feature_cols[0], feature_cols[1], feature_cols[2], feature_cols[3], feature_cols[4],
                 row.get('IMAGE', ''), row.get('PRICE', ''), 
-                '', # 👈 Price ve Retail Price arasındaki boş kolon
+                '', 
                 row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
-                p_lbs, # 👈 WEIGHT (LBS) Product Size X'in önünde
+                p_lbs,
                 convert_value(p_x, unit_choice), convert_value(p_y, unit_choice), convert_value(p_z, unit_choice),
                 c_lbs,
                 convert_value(row.get('PACKAGING SIZE - X (cm)', ''), unit_choice),
@@ -156,15 +156,34 @@ if uploaded_file:
             ]
             processed_data.append(processed_row)
 
-        # DataFrame oluştur ve Göster
         output_df = pd.DataFrame(processed_data, columns=output_headers)
         st.success(f"İşlem başarıyla tamamlandı! {len(output_df)} satır hazır.")
         st.dataframe(output_df)
 
-        # İndirme Hazırlığı
+        # --- Excel Yazma ve Stil Verme İşlemi ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            output_df.to_excel(writer, index=False)
+            output_df.to_excel(writer, index=False, sheet_name='Sheet1')
+            worksheet = writer.sheets['Sheet1']
+            
+            # Hizalama Tanımları
+            center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            left_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
+
+            # Sütunları ve satırları gezerek stili uygula
+            for col_idx, column_name in enumerate(output_headers, 1):
+                for row_idx in range(1, len(output_df) + 2): # +1 başlık, +1 openpyxl indexi
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    
+                    # Başlık satırını her zaman ortala
+                    if row_idx == 1:
+                        cell.alignment = center_alignment
+                    else:
+                        # 🔥 "Feature" içeren kolonları SOLA yasla, diğerlerini ORTALA
+                        if "Feature" in str(column_name):
+                            cell.alignment = left_alignment
+                        else:
+                            cell.alignment = center_alignment
         
         st.download_button(
             label=f"📥 İşlenmiş Excel'i İndir ({unit_choice.upper()})",
@@ -178,6 +197,3 @@ if uploaded_file:
         st.info("Lütfen Excel dosyanızdaki sütun başlıklarını kontrol edin.")
 else:
     st.info("Lütfen başlamak için bir Excel dosyası yükleyin.")
-
-
-
