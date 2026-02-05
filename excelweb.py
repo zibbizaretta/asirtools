@@ -2,6 +2,7 @@ import pandas as pd
 import math
 import re
 import io
+import os # 👈 Dosya uzantısını ayırmak için eklendi
 import streamlit as st
 from openpyxl.styles import Alignment
 
@@ -73,6 +74,11 @@ uploaded_file = st.file_uploader("İşlemek istediğiniz Excel dosyasını seçi
 
 if uploaded_file:
     try:
+        # Dinamik Dosya Adı Oluşturma
+        input_filename = uploaded_file.name
+        file_base, file_ext = os.path.splitext(input_filename)
+        output_filename = f"{file_base}_islenmis{file_ext}"
+
         df = pd.read_excel(uploaded_file, dtype=str).fillna('')
         processed_data = []
         unit_label = f"({unit_choice})"
@@ -140,7 +146,7 @@ if uploaded_file:
             processed_data.append(processed_row)
 
         output_df = pd.DataFrame(processed_data, columns=output_headers)
-        st.success(f"İşlem başarıyla tamamlandı!")
+        st.success(f"İşlem başarıyla tamamlandı! Dosya: {output_filename}")
         st.dataframe(output_df)
 
         output = io.BytesIO()
@@ -148,20 +154,15 @@ if uploaded_file:
             output_df.to_excel(writer, index=False, sheet_name='Sheet1')
             worksheet = writer.sheets['Sheet1']
             
-            # --- Hizalama Tanımları ---
-            # wrap_text=True olsa bile satır yüksekliği sabit olduğu için hücre genişlemez
             wrap_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
             wrap_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
             
-            # --- Sütun ve Satır Düzenleme ---
             for col_idx, column_name in enumerate(output_headers, 1):
                 column_letter = worksheet.cell(row=1, column=col_idx).column_letter
                 
-                # 1. Genişlik Ayarları
                 if "Feature" in str(column_name):
                     worksheet.column_dimensions[column_letter].width = 15
                 elif any(word in str(column_name) for word in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
-                    # Sayısal kolonlar veriye göre daralır
                     max_data_len = 0
                     for row_idx in range(2, len(output_df) + 2):
                         val = worksheet.cell(row=row_idx, column=col_idx).value
@@ -174,29 +175,22 @@ if uploaded_file:
                         max_len = max(max_len, len(str(val)) if val else 0)
                     worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
 
-                # 2. Hücre Stilleri ve Hizalama
                 for row_idx in range(1, len(output_df) + 2):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
-                    
                     if row_idx == 1:
                         cell.alignment = wrap_center
                     else:
-                        if "Feature" in str(column_name):
-                            cell.alignment = wrap_left
-                        else:
-                            cell.alignment = wrap_center
+                        cell.alignment = wrap_left if "Feature" in str(column_name) else wrap_center
                     
-                    # 🔥 Satır yüksekliklerini sabitle (İşte sihirli dokunuş!)
                     if row_idx > 1:
-                        worksheet.row_dimensions[row_idx].height = 15 # Standart tek satır yüksekliği
+                        worksheet.row_dimensions[row_idx].height = 15
 
-            # Başlık satırı yüksek kalsın (okunabilirlik için)
             worksheet.row_dimensions[1].height = 45
 
         st.download_button(
             label=f"📥 İşlenmiş Excel'i İndir ({unit_choice.upper()})",
             data=output.getvalue(),
-            file_name=f"asir_islenmis_{unit_choice}.xlsx",
+            file_name=output_filename, # 👈 Artık orijinal isme göre iniyor
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
