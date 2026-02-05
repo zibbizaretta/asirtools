@@ -58,16 +58,16 @@ def convert_value(val, unit_choice):
         return val
 
 # --- Streamlit Arayüzü ---
-st.set_page_config(page_title="Asir Tools - Excel Pro", layout="wide")
+st.set_page_config(page_title="Asir Tools", layout="wide")
 st.title("📊 Excel Veri Dönüştürücü")
 
 # Seçenekler Paneli
 with st.sidebar:
     st.header("Ayarlar")
-    unit_choice = st.radio("Ölçü Birimi Seçin:", ("cm", "inch"), index=1) # Default inch
+    unit_choice = st.radio("Ölçü Birimi Seçin: (Sadece kutu ölçüleri çevrilir)", ("cm", "inch"), index=1) # Default inch
     st.write(f"Şu an seçili: **{unit_choice}**")
 
-uploaded_file = st.file_uploader("İşlemek istediğiniz Excel dosyasını seçin", type=["xlsx", "xls"])
+uploaded_file = st.file_uploader("Excel dosyasını seçin", type=["xlsx", "xls"])
 
 if uploaded_file:
     try:
@@ -79,15 +79,15 @@ if uploaded_file:
         output_headers = [
             'CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION',
             'Feature 1', 'Feature 2', 'Feature 3', 'Feature 4', 'Feature 5',
-            'IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', # Price ile Retail arasına boşluk
-            'WEIGHT (LBS)', # Product Size'ın önüne taşındı
+            'IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', 
+            'WEIGHT (LBS)', 
             f'PRODUCT SIZE - X {unit_label}', f'PRODUCT SIZE - Y {unit_label}', f'PRODUCT SIZE - Z {unit_label}',
             'CARTON WEIGHT (LBS)',
             f'PACKAGING SIZE - X {unit_label}', f'PACKAGING SIZE - Y {unit_label}', f'PACKAGING SIZE - Z {unit_label}'
         ]
 
         for index, row in df.iterrows():
-            # 🔥 Boş satır kontrolü (21. satır hatasını önler)
+            # 🔥 Boş satır kontrolü 
             if not str(row.get('CODE', '')).strip():
                 continue
 
@@ -155,3 +155,4 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"Bir hata oluştu: {e}")
+
