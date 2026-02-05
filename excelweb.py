@@ -149,47 +149,49 @@ if uploaded_file:
             worksheet = writer.sheets['Sheet1']
             
             # --- Hizalama Tanımları ---
+            # wrap_text=True olsa bile satır yüksekliği sabit olduğu için hücre genişlemez
             wrap_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            no_wrap_left = Alignment(horizontal='left', vertical='center', wrap_text=False) # 👈 Feature için tek satır
+            wrap_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
             
-            # --- Sütun ve Hücre Düzenleme ---
+            # --- Sütun ve Satır Düzenleme ---
             for col_idx, column_name in enumerate(output_headers, 1):
                 column_letter = worksheet.cell(row=1, column=col_idx).column_letter
                 
-                # 1. Kolon Genişliği Ayarı
+                # 1. Genişlik Ayarları
                 if "Feature" in str(column_name):
                     worksheet.column_dimensions[column_letter].width = 15
                 elif any(word in str(column_name) for word in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
-                    # 🔥 Sayısal kolonlar: Genişlik sadece içindeki VERİYE göre (Başlığa bakma)
+                    # Sayısal kolonlar veriye göre daralır
                     max_data_len = 0
                     for row_idx in range(2, len(output_df) + 2):
                         val = worksheet.cell(row=row_idx, column=col_idx).value
                         max_data_len = max(max_data_len, len(str(val)) if val else 0)
-                    worksheet.column_dimensions[column_letter].width = max_data_len + 5 # Çok dar, başlık kayacak
+                    worksheet.column_dimensions[column_letter].width = max_data_len + 5 
                 else:
-                    # Diğer metin kolonları (Code, Desc vb.) normal genişlik
                     max_len = 0
                     for row_idx in range(1, len(output_df) + 2):
                         val = worksheet.cell(row=row_idx, column=col_idx).value
                         max_len = max(max_len, len(str(val)) if val else 0)
                     worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
 
-                # 2. Hücre Stilleri
+                # 2. Hücre Stilleri ve Hizalama
                 for row_idx in range(1, len(output_df) + 2):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
                     
                     if row_idx == 1:
-                        # BAŞLIKLAR: Her zaman ortalı ve metin kaydırma açık (Alta doğru genişlesin)
                         cell.alignment = wrap_center
                     else:
-                        # VERİ SATIRLARI:
                         if "Feature" in str(column_name):
-                            cell.alignment = no_wrap_left # 🔥 Özellikler tek satır kalsın
+                            cell.alignment = wrap_left
                         else:
-                            cell.alignment = wrap_center # Diğer her şey ortalı
-            
-            # Başlık satırının yüksekliğini biraz artıralım ki kayan yazılar görünsün
-            worksheet.row_dimensions[1].height = 45 
+                            cell.alignment = wrap_center
+                    
+                    # 🔥 Satır yüksekliklerini sabitle (İşte sihirli dokunuş!)
+                    if row_idx > 1:
+                        worksheet.row_dimensions[row_idx].height = 15 # Standart tek satır yüksekliği
+
+            # Başlık satırı yüksek kalsın (okunabilirlik için)
+            worksheet.row_dimensions[1].height = 45
 
         st.download_button(
             label=f"📥 İşlenmiş Excel'i İndir ({unit_choice.upper()})",
