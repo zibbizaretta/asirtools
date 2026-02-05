@@ -72,9 +72,9 @@ def convert_cm_to_inch(cm_str):
         return cm_input_str
 
 # --- Streamlit Arayüzü ---
-st.set_page_config(page_title="Excel Dönüştürücü", page_icon="📊")
+st.set_page_config(page_title="WF Template Tool", page_icon="📊")
 st.title("📊 Excel Veri İşleme Paneli")
-st.markdown("Arkadaşlarınızla paylaşabileceğiniz web tabanlı Excel işleme aracı.")
+st.markdown("Web tabanlı Excel işleme aracı.")
 
 uploaded_file = st.file_uploader("İşlemek istediğiniz Excel dosyasını seçin", type=["xlsx", "xls"])
 
@@ -165,3 +165,4 @@ if uploaded_file:
         )
     except Exception as e:
         st.error(f"Hata oluştu: {e}")
+
