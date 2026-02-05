@@ -148,42 +148,40 @@ if uploaded_file:
             output_df.to_excel(writer, index=False, sheet_name='Sheet1')
             worksheet = writer.sheets['Sheet1']
             
+            # Hizalama Tanımları
             center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             left_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
 
-            # Sütun Genişliklerini ve Hizalamayı Düzenle
+            # Sütun Ayarları
             for col_idx, column_name in enumerate(output_headers, 1):
-                # 1. Kolon harfini bul (A, B, C...)
                 column_letter = worksheet.cell(row=1, column=col_idx).column_letter
                 
-                # 2. Features kolonları hariç genişliği ayarla
-                if "Feature" not in str(column_name):
-                    # Kolondaki en uzun metni bul
+                # --- GENİŞLİK AYARI ---
+                if "Feature" in str(column_name):
+                    # Feature kolonları küçük ve sabit olsun (Price kolonu gibi yaklaşık 12-15 birim)
+                    worksheet.column_dimensions[column_letter].width = 15
+                else:
+                    # Diğer kolonlar içeriğe göre otomatik genişlesin
                     max_length = 0
                     for row_idx in range(1, len(output_df) + 2):
                         cell = worksheet.cell(row=row_idx, column=col_idx)
-                        # İçerik uzunluğunu hesapla (Başlık dahil)
                         val_len = len(str(cell.value)) if cell.value else 0
                         if val_len > max_length:
                             max_length = val_len
                     
-                    # Genişliği ayarla (Biraz pay bırakıyoruz)
-                    adjusted_width = (max_length + 4)
-                    worksheet.column_dimensions[column_letter].width = min(adjusted_width, 50) # Max 50 birim
-                else:
-                    # Feature kolonları için sabit makul bir genişlik
-                    worksheet.column_dimensions[column_letter].width = 30
+                    adjusted_width = (max_length + 2)
+                    worksheet.column_dimensions[column_letter].width = min(adjusted_width, 50)
 
-                # 3. Hücreleri gez ve hizalamayı uygula
+                # --- HİZALAMA AYARI ---
                 for row_idx in range(1, len(output_df) + 2):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
                     if row_idx == 1:
-                        cell.alignment = center_alignment
+                        cell.alignment = center_alignment # Başlıklar hep ortalı
                     else:
                         if "Feature" in str(column_name):
-                            cell.alignment = left_alignment
+                            cell.alignment = left_alignment # Özellikler sola yaslı
                         else:
-                            cell.alignment = center_alignment
+                            cell.alignment = center_alignment # Diğer her şey ortalı
         
         st.download_button(
             label=f"📥 İşlenmiş Excel'i İndir ({unit_choice.upper()})",
