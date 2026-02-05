@@ -68,7 +68,7 @@ with st.sidebar:
         "Ölçü Birimi Seçin:", 
         ("cm", "inch"), 
         index=1, 
-        help="Ürün ve paket ölçüleri bu birime göre hesaplanır."
+        help="Sadece paket ölçüleri bu birime göre hesaplanır. (Şimdilik)"
     )
     st.info(f"Seçili Birim: **{unit_choice.upper()}**")
     
@@ -178,3 +178,4 @@ if uploaded_file:
         st.info("Lütfen Excel dosyanızdaki sütun başlıklarını kontrol edin.")
 else:
     st.info("Lütfen başlamak için bir Excel dosyası yükleyin.")
+
