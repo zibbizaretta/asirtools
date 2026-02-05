@@ -48,7 +48,7 @@ def clean_feature_list(features_str):
     features = re.split(r'\s*(?:\\n|\n)\s*', str(features_str).strip())
     return [f.strip() for f in features if f and f.strip()]
 
-def convert_value(val, unit_choice):
+def convert_size_value(val, unit_choice):
     if val is None or val == '' or (isinstance(val, float) and math.isnan(val)): return ''
     try:
         num_val = float(str(val).replace(',', '.'))
@@ -58,6 +58,19 @@ def convert_value(val, unit_choice):
     except:
         return val
 
+def convert_weight_value(val_kg, weight_unit_choice):
+    """Kullanıcı LBS seçerse KG'yi LBS'e çevirir, KG seçerse olduğu gibi bırakır."""
+    if val_kg is None or val_kg == '' or (isinstance(val_kg, float) and math.isnan(val_kg)): return ''
+    try:
+        num_val = float(str(val_kg).replace(',', '.'))
+        if weight_unit_choice == "LBS":
+            c_lbs = round(num_val * KG_TO_LBS, 2)
+            p_lbs = max(0.0, round(c_lbs - 0.01, 2)) # Net/Brüt farkı mantığı
+            return c_lbs, p_lbs
+        return round(num_val, 2), round(num_val, 2)
+    except:
+        return val_kg, val_kg
+
 # --- Streamlit Arayüzü ---
 st.set_page_config(page_title="Asir Tools", layout="wide")
 st.title("📊 Excel Veri Dönüştürücü")
@@ -65,11 +78,12 @@ st.title("📊 Excel Veri Dönüştürücü")
 # Sidebar Ayarları
 with st.sidebar:
     st.header("⚙️ Ayarlar")
-    unit_choice = st.radio("Ölçü Birimi Seçin:", ("cm", "inch"), index=1)
-    st.info(f"Seçili Birim: **{unit_choice.upper()}**")
+    size_unit = st.radio("Ölçü Birimi (Boyut):", ("cm", "inch"), index=1)
+    weight_unit = st.radio("Ağırlık Birimi:", ("KG", "LBS"), index=1) # Default LBS
+    
+    st.info(f"Seçili: **{size_unit.upper()}** / **{weight_unit.upper()}**")
     st.divider()
     
-    # 🔥 HIZLI SIFIRLAMA: Butona basınca JS ile linke yönlendirme
     if st.button("🏠 Ana Sayfa", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
@@ -84,16 +98,17 @@ if uploaded_file:
 
         df = pd.read_excel(uploaded_file, dtype=str).fillna('')
         processed_data = []
-        unit_label = f"({unit_choice})"
+        size_label = f"({size_unit})"
+        weight_label = f"({weight_unit})"
         
         output_headers = [
             'CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION',
             'Feature 1', 'Feature 2', 'Feature 3', 'Feature 4', 'Feature 5',
             'IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', 
-            'WEIGHT (LBS)', 
-            f'PRODUCT SIZE - X {unit_label}', f'PRODUCT SIZE - Y {unit_label}', f'PRODUCT SIZE - Z {unit_label}',
-            'CARTON WEIGHT (LBS)',
-            f'PACKAGING SIZE - X {unit_label}', f'PACKAGING SIZE - Y {unit_label}', f'PACKAGING SIZE - Z {unit_label}'
+            f'WEIGHT {weight_label}', # Kolon başlığı dinamik oldu
+            f'PRODUCT SIZE - X {size_label}', f'PRODUCT SIZE - Y {size_label}', f'PRODUCT SIZE - Z {size_label}',
+            f'CARTON WEIGHT {weight_label}',
+            f'PACKAGING SIZE - X {size_label}', f'PACKAGING SIZE - Y {size_label}', f'PACKAGING SIZE - Z {size_label}'
         ]
 
         for index, row in df.iterrows():
@@ -125,13 +140,8 @@ if uploaded_file:
                 else:
                     feature_cols[4] += f"\n{MADE_IN_TURKEY}"
 
-            try:
-                weight_input = str(row.get('WEIGHT (Kg)', '')).replace(',', '.')
-                w_kg = float(weight_input)
-                c_lbs = round(w_kg * KG_TO_LBS, 2)
-                p_lbs = max(0.0, round(c_lbs - 0.01, 2))
-            except:
-                c_lbs = p_lbs = row.get('WEIGHT (Kg)', '')
+            # --- Ağırlık Dönüşümü (Dinamik) ---
+            c_weight, p_weight = convert_weight_value(row.get('WEIGHT (Kg)', ''), weight_unit)
 
             processed_row = [
                 code_val, row.get('EAN CODE', ''), 
@@ -139,12 +149,12 @@ if uploaded_file:
                 feature_cols[0], feature_cols[1], feature_cols[2], feature_cols[3], feature_cols[4],
                 row.get('IMAGE', ''), row.get('PRICE', ''), '', 
                 row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
-                p_lbs,
-                convert_value(p_x, unit_choice), convert_value(p_y, unit_choice), convert_value(p_z, unit_choice),
-                c_lbs,
-                convert_value(row.get('PACKAGING SIZE - X (cm)', ''), unit_choice),
-                convert_value(row.get('PACKAGING SIZE - Y (cm)', ''), unit_choice),
-                convert_value(row.get('PACKAGING SIZE - Z (cm)', ''), unit_choice)
+                p_weight, # WEIGHT (LBS veya KG)
+                convert_size_value(p_x, size_unit), convert_size_value(p_y, size_unit), convert_size_value(p_z, size_unit),
+                c_weight, # CARTON WEIGHT (LBS veya KG)
+                convert_size_value(row.get('PACKAGING SIZE - X (cm)', ''), size_unit),
+                convert_size_value(row.get('PACKAGING SIZE - Y (cm)', ''), size_unit),
+                convert_size_value(row.get('PACKAGING SIZE - Z (cm)', ''), size_unit)
             ]
             processed_data.append(processed_row)
 
@@ -191,7 +201,7 @@ if uploaded_file:
             worksheet.row_dimensions[1].height = 45
 
         st.download_button(
-            label=f"📥 İşlenmiş Excel'i İndir ({unit_choice.upper()})",
+            label=f"📥 İşlenmiş Excel'i İndir ({size_unit.upper()} / {weight_unit.upper()})",
             data=output.getvalue(),
             file_name=output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
