@@ -2,7 +2,7 @@ import pandas as pd
 import math
 import re
 import io
-import os # 👈 Dosya uzantısını ayırmak için eklendi
+import os
 import streamlit as st
 from openpyxl.styles import Alignment
 
@@ -62,12 +62,16 @@ def convert_value(val, unit_choice):
 st.set_page_config(page_title="Asir Tools", layout="wide")
 st.title("📊 Excel Veri Dönüştürücü")
 
+# Sidebar Ayarları
 with st.sidebar:
     st.header("⚙️ Ayarlar")
     unit_choice = st.radio("Ölçü Birimi Seçin:", ("cm", "inch"), index=1)
     st.info(f"Seçili Birim: **{unit_choice.upper()}**")
     st.divider()
-    if st.button("🔄 Uygulamayı Sıfırla"):
+    
+    # "Uygulamayı Sıfırla" yerine "Ana Sayfa" butonu ve düzeltilmiş rerun mantığı
+    if st.button("🏠 Ana Sayfa", use_container_width=True):
+        st.cache_data.clear() # Varsa önbelleği temizler
         st.rerun()
 
 uploaded_file = st.file_uploader("İşlemek istediğiniz Excel dosyasını seçin", type=["xlsx", "xls"])
@@ -146,7 +150,7 @@ if uploaded_file:
             processed_data.append(processed_row)
 
         output_df = pd.DataFrame(processed_data, columns=output_headers)
-        st.success(f"İşlem başarıyla tamamlandı! Dosya: {output_filename}")
+        st.success(f"✅ İşlem başarıyla tamamlandı! Dosya adı: {output_filename}")
         st.dataframe(output_df)
 
         output = io.BytesIO()
@@ -154,12 +158,15 @@ if uploaded_file:
             output_df.to_excel(writer, index=False, sheet_name='Sheet1')
             worksheet = writer.sheets['Sheet1']
             
+            # --- Hizalama Tanımları ---
             wrap_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
             wrap_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
             
+            # --- Sütun ve Satır Düzenleme ---
             for col_idx, column_name in enumerate(output_headers, 1):
                 column_letter = worksheet.cell(row=1, column=col_idx).column_letter
                 
+                # 1. Kolon Genişlikleri
                 if "Feature" in str(column_name):
                     worksheet.column_dimensions[column_letter].width = 15
                 elif any(word in str(column_name) for word in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
@@ -175,6 +182,7 @@ if uploaded_file:
                         max_len = max(max_len, len(str(val)) if val else 0)
                     worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
 
+                # 2. Hücre Stilleri ve Yükseklik Sabitleme
                 for row_idx in range(1, len(output_df) + 2):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
                     if row_idx == 1:
@@ -183,18 +191,20 @@ if uploaded_file:
                         cell.alignment = wrap_left if "Feature" in str(column_name) else wrap_center
                     
                     if row_idx > 1:
-                        worksheet.row_dimensions[row_idx].height = 15
+                        worksheet.row_dimensions[row_idx].height = 15 # Satır yüksekliği sabitlendi
 
+            # Başlık satırı yüksekliği
             worksheet.row_dimensions[1].height = 45
 
         st.download_button(
             label=f"📥 İşlenmiş Excel'i İndir ({unit_choice.upper()})",
             data=output.getvalue(),
-            file_name=output_filename, # 👈 Artık orijinal isme göre iniyor
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            file_name=output_filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
         )
 
     except Exception as e:
         st.error(f"Beklenmedik bir hata oluştu: {e}")
 else:
-    st.info("Lütfen başlamak için bir Excel dosyası yükleyin.")
+    st.info("👋 Hoş geldiniz! Lütfen işlem yapmak istediğiniz Excel dosyasını yukarıdan seçin.")
