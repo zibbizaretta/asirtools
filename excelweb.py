@@ -3,7 +3,7 @@ import math
 import re
 import io
 import streamlit as st
-from openpyxl.styles import Alignment # 👈 Hizalama (Alignment) için gerekli modül
+from openpyxl.styles import Alignment
 
 # --- Sabitler ---
 KG_TO_LBS = 2.20462
@@ -48,7 +48,6 @@ def clean_feature_list(features_str):
     return [f.strip() for f in features if f and f.strip()]
 
 def convert_value(val, unit_choice):
-    """Kullanıcı inch seçerse çevirir, cm seçerse olduğu gibi bırakır."""
     if val is None or val == '' or (isinstance(val, float) and math.isnan(val)): return ''
     try:
         num_val = float(str(val).replace(',', '.'))
@@ -62,17 +61,10 @@ def convert_value(val, unit_choice):
 st.set_page_config(page_title="Asir Tools", layout="wide")
 st.title("📊 Excel Veri Dönüştürücü")
 
-# Seçenekler Paneli (Sidebar)
 with st.sidebar:
     st.header("⚙️ Ayarlar")
-    unit_choice = st.radio(
-        "Ölçü Birimi Seçin:", 
-        ("cm", "inch"), 
-        index=1, 
-        help="Tespit edilebilen ürün ve paket ölçüleri bu birime göre hesaplanır."
-    )
+    unit_choice = st.radio("Ölçü Birimi Seçin:", ("cm", "inch"), index=1)
     st.info(f"Seçili Birim: **{unit_choice.upper()}**")
-    
     st.divider()
     if st.button("🔄 Uygulamayı Sıfırla"):
         st.rerun()
@@ -81,13 +73,10 @@ uploaded_file = st.file_uploader("İşlemek istediğiniz Excel dosyasını seçi
 
 if uploaded_file:
     try:
-        # Dosyayı oku
         df = pd.read_excel(uploaded_file, dtype=str).fillna('')
-        
         processed_data = []
         unit_label = f"({unit_choice})"
         
-        # Kolon Başlıkları
         output_headers = [
             'CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION',
             'Feature 1', 'Feature 2', 'Feature 3', 'Feature 4', 'Feature 5',
@@ -99,19 +88,16 @@ if uploaded_file:
         ]
 
         for index, row in df.iterrows():
-            # 1. Boş satır kontrolü
             code_val = str(row.get('CODE', '')).strip()
             if not code_val or code_val.lower() == 'nan':
                 continue
 
-            # 2. Boyutları Çıkar
             features_text = str(row.get('FEATURES', ''))
             extra_text = str(row.get('EXTRA FEATURES', ''))
             combined_text = features_text + "\n" + extra_text
             dims = extract_dimensions_from_string(combined_text)
             p_x, p_y, p_z = dims if dims else ('', '', '')
 
-            # 3. Özellikleri ve Made in Türkiye'yi Düzenle
             feat_list = clean_feature_list(features_text)
             if "number of packages" not in extra_text.lower():
                 feat_list.extend(clean_feature_list(extra_text))
@@ -130,7 +116,6 @@ if uploaded_file:
                 else:
                     feature_cols[4] += f"\n{MADE_IN_TURKEY}"
 
-            # 4. Ağırlık Dönüşümü
             try:
                 weight_input = str(row.get('WEIGHT (Kg)', '')).replace(',', '.')
                 w_kg = float(weight_input)
@@ -139,13 +124,11 @@ if uploaded_file:
             except:
                 c_lbs = p_lbs = row.get('WEIGHT (Kg)', '')
 
-            # 5. Satırı Listeye Ekle
             processed_row = [
                 code_val, row.get('EAN CODE', ''), 
                 str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', ''),
                 feature_cols[0], feature_cols[1], feature_cols[2], feature_cols[3], feature_cols[4],
-                row.get('IMAGE', ''), row.get('PRICE', ''), 
-                '', 
+                row.get('IMAGE', ''), row.get('PRICE', ''), '', 
                 row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
                 p_lbs,
                 convert_value(p_x, unit_choice), convert_value(p_y, unit_choice), convert_value(p_z, unit_choice),
@@ -157,29 +140,46 @@ if uploaded_file:
             processed_data.append(processed_row)
 
         output_df = pd.DataFrame(processed_data, columns=output_headers)
-        st.success(f"İşlem başarıyla tamamlandı! {len(output_df)} satır hazır.")
+        st.success(f"İşlem başarıyla tamamlandı!")
         st.dataframe(output_df)
 
-        # --- Excel Yazma ve Stil Verme İşlemi ---
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             output_df.to_excel(writer, index=False, sheet_name='Sheet1')
             worksheet = writer.sheets['Sheet1']
             
-            # Hizalama Tanımları
             center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             left_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
 
-            # Sütunları ve satırları gezerek stili uygula
+            # Sütun Genişliklerini ve Hizalamayı Düzenle
             for col_idx, column_name in enumerate(output_headers, 1):
-                for row_idx in range(1, len(output_df) + 2): # +1 başlık, +1 openpyxl indexi
-                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                # 1. Kolon harfini bul (A, B, C...)
+                column_letter = worksheet.cell(row=1, column=col_idx).column_letter
+                
+                # 2. Features kolonları hariç genişliği ayarla
+                if "Feature" not in str(column_name):
+                    # Kolondaki en uzun metni bul
+                    max_length = 0
+                    for row_idx in range(1, len(output_df) + 2):
+                        cell = worksheet.cell(row=row_idx, column=col_idx)
+                        # İçerik uzunluğunu hesapla (Başlık dahil)
+                        val_len = len(str(cell.value)) if cell.value else 0
+                        if val_len > max_length:
+                            max_length = val_len
                     
-                    # Başlık satırını her zaman ortala
+                    # Genişliği ayarla (Biraz pay bırakıyoruz)
+                    adjusted_width = (max_length + 4)
+                    worksheet.column_dimensions[column_letter].width = min(adjusted_width, 50) # Max 50 birim
+                else:
+                    # Feature kolonları için sabit makul bir genişlik
+                    worksheet.column_dimensions[column_letter].width = 30
+
+                # 3. Hücreleri gez ve hizalamayı uygula
+                for row_idx in range(1, len(output_df) + 2):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
                     if row_idx == 1:
                         cell.alignment = center_alignment
                     else:
-                        # 🔥 "Feature" içeren kolonları SOLA yasla, diğerlerini ORTALA
                         if "Feature" in str(column_name):
                             cell.alignment = left_alignment
                         else:
@@ -194,6 +194,5 @@ if uploaded_file:
 
     except Exception as e:
         st.error(f"Beklenmedik bir hata oluştu: {e}")
-        st.info("Lütfen Excel dosyanızdaki sütun başlıklarını kontrol edin.")
 else:
     st.info("Lütfen başlamak için bir Excel dosyası yükleyin.")
