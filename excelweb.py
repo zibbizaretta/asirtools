@@ -45,6 +45,7 @@ def extract_dimensions_from_string(text_to_search):
 
 def clean_feature_list(features_str):
     if pd.isna(features_str) or features_str == "": return []
+    # Satır sonlarına veya \n ifadesine göre böler
     features = re.split(r'\s*(?:\\n|\n)\s*', str(features_str).strip())
     return [f.strip() for f in features if f and f.strip()]
 
@@ -59,13 +60,12 @@ def convert_size_value(val, unit_choice):
         return val
 
 def convert_weight_value(val_kg, weight_unit_choice):
-    """Kullanıcı LBS seçerse KG'yi LBS'e çevirir, KG seçerse olduğu gibi bırakır."""
     if val_kg is None or val_kg == '' or (isinstance(val_kg, float) and math.isnan(val_kg)): return ''
     try:
         num_val = float(str(val_kg).replace(',', '.'))
         if weight_unit_choice == "LBS":
             c_lbs = round(num_val * KG_TO_LBS, 2)
-            p_lbs = max(0.0, round(c_lbs - 0.01, 2)) # Net/Brüt farkı mantığı
+            p_lbs = max(0.0, round(c_lbs - 0.01, 2))
             return c_lbs, p_lbs
         return round(num_val, 2), round(num_val, 2)
     except:
@@ -79,11 +79,14 @@ st.title("📊 Excel Veri Dönüştürücü")
 with st.sidebar:
     st.header("⚙️ Ayarlar")
     size_unit = st.radio("Ölçü Birimi (Boyut):", ("cm", "inch"), index=1)
-    weight_unit = st.radio("Ağırlık Birimi:", ("KG", "LBS"), index=1) # Default LBS
+    weight_unit = st.radio("Ağırlık Birimi:", ("KG", "LBS"), index=1)
     
-    st.info(f"Seçili: **{size_unit.upper()}** / **{weight_unit.upper()}**")
     st.divider()
+    st.subheader("Özellik (Feature) Ayarları")
+    add_made_in_tr = st.checkbox("Made in Türkiye Eklensin mi?", value=True)
+    feature_count = st.slider("Özellik Kolon Sayısı:", min_value=1, max_value=10, value=5)
     
+    st.divider()
     if st.button("🏠 Ana Sayfa", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
@@ -101,11 +104,14 @@ if uploaded_file:
         size_label = f"({size_unit})"
         weight_label = f"({weight_unit})"
         
+        # Dinamik Özellik Başlıkları Oluşturma
+        feature_headers = [f'Feature {i+1}' for i in range(feature_count)]
+        
         output_headers = [
-            'CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION',
-            'Feature 1', 'Feature 2', 'Feature 3', 'Feature 4', 'Feature 5',
+            'CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION'
+        ] + feature_headers + [
             'IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', 
-            f'WEIGHT {weight_label}', # Kolon başlığı dinamik oldu
+            f'WEIGHT {weight_label}',
             f'PRODUCT SIZE - X {size_label}', f'PRODUCT SIZE - Y {size_label}', f'PRODUCT SIZE - Z {size_label}',
             f'CARTON WEIGHT {weight_label}',
             f'PACKAGING SIZE - X {size_label}', f'PACKAGING SIZE - Y {size_label}', f'PACKAGING SIZE - Z {size_label}'
@@ -116,42 +122,47 @@ if uploaded_file:
             if not code_val or code_val.lower() == 'nan':
                 continue
 
+            # 1. Özellikleri topla ve temizle
             features_text = str(row.get('FEATURES', ''))
             extra_text = str(row.get('EXTRA FEATURES', ''))
-            combined_text = features_text + "\n" + extra_text
-            dims = extract_dimensions_from_string(combined_text)
-            p_x, p_y, p_z = dims if dims else ('', '', '')
-
             feat_list = clean_feature_list(features_text)
             if "number of packages" not in extra_text.lower():
                 feat_list.extend(clean_feature_list(extra_text))
             
-            feature_cols = [""] * 5
-            for i in range(min(len(feat_list), 4)):
-                feature_cols[i] = feat_list[i]
-            if len(feat_list) >= 5:
-                feature_cols[4] = "\n".join(feat_list[4:])
-            
-            if not any(MADE_IN_TURKEY in str(f) for f in feature_cols):
-                for i in range(5):
-                    if feature_cols[i] == "":
-                        feature_cols[i] = MADE_IN_TURKEY
-                        break
-                else:
-                    feature_cols[4] += f"\n{MADE_IN_TURKEY}"
+            # 2. Boyutları çıkar (ham metin üzerinden)
+            dims = extract_dimensions_from_string(features_text + "\n" + extra_text)
+            p_x, p_y, p_z = dims if dims else ('', '', '')
 
-            # --- Ağırlık Dönüşümü (Dinamik) ---
+            # 3. Made in Türkiye Ekleme (Seçenek aktifse)
+            if add_made_in_tr:
+                if not any(MADE_IN_TURKEY in str(f) for f in feat_list):
+                    feat_list.append(MADE_IN_TURKEY)
+
+            # 4. Özellikleri Kolonlara Dağıt (Dinamik Mantık)
+            feature_cols = [""] * feature_count
+            if feature_count > 1:
+                # Son kolon hariç her birine bir madde
+                for i in range(min(len(feat_list), feature_count - 1)):
+                    feature_cols[i] = feat_list[i]
+                # Geri kalan her şeyi son kolona ekle
+                if len(feat_list) >= feature_count:
+                    feature_cols[feature_count-1] = "\n".join(feat_list[feature_count-1:])
+            elif feature_count == 1 and feat_list:
+                feature_cols[0] = "\n".join(feat_list)
+
+            # 5. Ağırlık Dönüşümü
             c_weight, p_weight = convert_weight_value(row.get('WEIGHT (Kg)', ''), weight_unit)
 
+            # 6. Satırı Oluştur
             processed_row = [
                 code_val, row.get('EAN CODE', ''), 
-                str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', ''),
-                feature_cols[0], feature_cols[1], feature_cols[2], feature_cols[3], feature_cols[4],
+                str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', '')
+            ] + feature_cols + [
                 row.get('IMAGE', ''), row.get('PRICE', ''), '', 
                 row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
-                p_weight, # WEIGHT (LBS veya KG)
+                p_weight,
                 convert_size_value(p_x, size_unit), convert_size_value(p_y, size_unit), convert_size_value(p_z, size_unit),
-                c_weight, # CARTON WEIGHT (LBS veya KG)
+                c_weight,
                 convert_size_value(row.get('PACKAGING SIZE - X (cm)', ''), size_unit),
                 convert_size_value(row.get('PACKAGING SIZE - Y (cm)', ''), size_unit),
                 convert_size_value(row.get('PACKAGING SIZE - Z (cm)', ''), size_unit)
@@ -159,7 +170,7 @@ if uploaded_file:
             processed_data.append(processed_row)
 
         output_df = pd.DataFrame(processed_data, columns=output_headers)
-        st.success(f"✅ İşlem başarıyla tamamlandı! Dosya adı: {output_filename}")
+        st.success(f"✅ İşlem tamamlandı! {len(output_df)} ürün hazır.")
         st.dataframe(output_df)
 
         output = io.BytesIO()
@@ -173,6 +184,7 @@ if uploaded_file:
             for col_idx, column_name in enumerate(output_headers, 1):
                 column_letter = worksheet.cell(row=1, column=col_idx).column_letter
                 
+                # Genişlik Ayarları
                 if "Feature" in str(column_name):
                     worksheet.column_dimensions[column_letter].width = 15
                 elif any(word in str(column_name) for word in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
@@ -201,7 +213,7 @@ if uploaded_file:
             worksheet.row_dimensions[1].height = 45
 
         st.download_button(
-            label=f"📥 İşlenmiş Excel'i İndir ({size_unit.upper()} / {weight_unit.upper()})",
+            label=f"📥 İşlenmiş Excel'i İndir",
             data=output.getvalue(),
             file_name=output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
