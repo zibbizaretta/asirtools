@@ -148,41 +148,49 @@ if uploaded_file:
             output_df.to_excel(writer, index=False, sheet_name='Sheet1')
             worksheet = writer.sheets['Sheet1']
             
-            # Hizalama Tanımları
-            center_alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            left_alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
-
-            # Sütun Ayarları
+            # --- Hizalama Tanımları ---
+            wrap_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            no_wrap_left = Alignment(horizontal='left', vertical='center', wrap_text=False) # 👈 Feature için tek satır
+            
+            # --- Sütun ve Hücre Düzenleme ---
             for col_idx, column_name in enumerate(output_headers, 1):
                 column_letter = worksheet.cell(row=1, column=col_idx).column_letter
                 
-                # --- GENİŞLİK AYARI ---
+                # 1. Kolon Genişliği Ayarı
                 if "Feature" in str(column_name):
-                    # Feature kolonları küçük ve sabit olsun (Price kolonu gibi yaklaşık 12-15 birim)
                     worksheet.column_dimensions[column_letter].width = 15
+                elif any(word in str(column_name) for word in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
+                    # 🔥 Sayısal kolonlar: Genişlik sadece içindeki VERİYE göre (Başlığa bakma)
+                    max_data_len = 0
+                    for row_idx in range(2, len(output_df) + 2):
+                        val = worksheet.cell(row=row_idx, column=col_idx).value
+                        max_data_len = max(max_data_len, len(str(val)) if val else 0)
+                    worksheet.column_dimensions[column_letter].width = max_data_len + 5 # Çok dar, başlık kayacak
                 else:
-                    # Diğer kolonlar içeriğe göre otomatik genişlesin
-                    max_length = 0
+                    # Diğer metin kolonları (Code, Desc vb.) normal genişlik
+                    max_len = 0
                     for row_idx in range(1, len(output_df) + 2):
-                        cell = worksheet.cell(row=row_idx, column=col_idx)
-                        val_len = len(str(cell.value)) if cell.value else 0
-                        if val_len > max_length:
-                            max_length = val_len
-                    
-                    adjusted_width = (max_length + 2)
-                    worksheet.column_dimensions[column_letter].width = min(adjusted_width, 50)
+                        val = worksheet.cell(row=row_idx, column=col_idx).value
+                        max_len = max(max_len, len(str(val)) if val else 0)
+                    worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
 
-                # --- HİZALAMA AYARI ---
+                # 2. Hücre Stilleri
                 for row_idx in range(1, len(output_df) + 2):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
+                    
                     if row_idx == 1:
-                        cell.alignment = center_alignment # Başlıklar hep ortalı
+                        # BAŞLIKLAR: Her zaman ortalı ve metin kaydırma açık (Alta doğru genişlesin)
+                        cell.alignment = wrap_center
                     else:
+                        # VERİ SATIRLARI:
                         if "Feature" in str(column_name):
-                            cell.alignment = left_alignment # Özellikler sola yaslı
+                            cell.alignment = no_wrap_left # 🔥 Özellikler tek satır kalsın
                         else:
-                            cell.alignment = center_alignment # Diğer her şey ortalı
-        
+                            cell.alignment = wrap_center # Diğer her şey ortalı
+            
+            # Başlık satırının yüksekliğini biraz artıralım ki kayan yazılar görünsün
+            worksheet.row_dimensions[1].height = 45 
+
         st.download_button(
             label=f"📥 İşlenmiş Excel'i İndir ({unit_choice.upper()})",
             data=output.getvalue(),
