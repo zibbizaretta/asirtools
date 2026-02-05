@@ -69,16 +69,15 @@ with st.sidebar:
     st.info(f"Seçili Birim: **{unit_choice.upper()}**")
     st.divider()
     
-    # "Uygulamayı Sıfırla" yerine "Ana Sayfa" butonu ve düzeltilmiş rerun mantığı
+    # 🔥 HIZLI SIFIRLAMA: Butona basınca JS ile linke yönlendirme
     if st.button("🏠 Ana Sayfa", use_container_width=True):
-        st.cache_data.clear() # Varsa önbelleği temizler
-        st.rerun()
+        st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
+        st.stop()
 
 uploaded_file = st.file_uploader("İşlemek istediğiniz Excel dosyasını seçin", type=["xlsx", "xls"])
 
 if uploaded_file:
     try:
-        # Dinamik Dosya Adı Oluşturma
         input_filename = uploaded_file.name
         file_base, file_ext = os.path.splitext(input_filename)
         output_filename = f"{file_base}_islenmis{file_ext}"
@@ -158,15 +157,12 @@ if uploaded_file:
             output_df.to_excel(writer, index=False, sheet_name='Sheet1')
             worksheet = writer.sheets['Sheet1']
             
-            # --- Hizalama Tanımları ---
             wrap_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
             wrap_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
             
-            # --- Sütun ve Satır Düzenleme ---
             for col_idx, column_name in enumerate(output_headers, 1):
                 column_letter = worksheet.cell(row=1, column=col_idx).column_letter
                 
-                # 1. Kolon Genişlikleri
                 if "Feature" in str(column_name):
                     worksheet.column_dimensions[column_letter].width = 15
                 elif any(word in str(column_name) for word in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
@@ -182,7 +178,6 @@ if uploaded_file:
                         max_len = max(max_len, len(str(val)) if val else 0)
                     worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
 
-                # 2. Hücre Stilleri ve Yükseklik Sabitleme
                 for row_idx in range(1, len(output_df) + 2):
                     cell = worksheet.cell(row=row_idx, column=col_idx)
                     if row_idx == 1:
@@ -191,9 +186,8 @@ if uploaded_file:
                         cell.alignment = wrap_left if "Feature" in str(column_name) else wrap_center
                     
                     if row_idx > 1:
-                        worksheet.row_dimensions[row_idx].height = 15 # Satır yüksekliği sabitlendi
+                        worksheet.row_dimensions[row_idx].height = 15
 
-            # Başlık satırı yüksekliği
             worksheet.row_dimensions[1].height = 45
 
         st.download_button(
