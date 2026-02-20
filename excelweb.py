@@ -4,6 +4,7 @@ import re
 import io
 import os
 import streamlit as st
+import pypdf
 from openpyxl.styles import Alignment
 
 # --- Sabitler ---
@@ -11,7 +12,7 @@ KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
 
-# --- Yardımcı Fonksiyonlar ---
+# --- YARDIMCI FONKSİYONLAR (EXCEL ARACI İÇİN) ---
 def extract_dimensions_from_string(text_to_search):
     def find_dimension_value(pattern, text):
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -21,17 +22,14 @@ def extract_dimensions_from_string(text_to_search):
                 return float(value_str)
             except: return None
         return None
-
     w = find_dimension_value(r'(?:Width|Genişlik):\s*(\d+(?:[.,]\d+)?)', text_to_search)
     h = find_dimension_value(r'(?:Height|Yükseklik):\s*(\d+(?:[.,]\d+)?)', text_to_search)
     d = find_dimension_value(r'(?:Depth|Derinlik):\s*(\d+(?:[.,]\d+)?)', text_to_search)
     l = find_dimension_value(r'(?:Length|Uzunluk):\s*(\d+(?:[.,]\d+)?)', text_to_search)
     diam = find_dimension_value(r'(?:Diameter|Çap):\s*(\d+(?:[.,]\d+)?)', text_to_search)
-
     y_val = d if d is not None else l
     if w is not None and h is not None and y_val is not None: return (w, y_val, h)
     if diam is not None and h is not None: return (diam, diam, h)
-
     xyz_pattern = r'(\d+(?:[.,]\d+)?)\s*[xX]\s*(\d+(?:[.,]\d+)?)(?:\s*[xX]\s*(\d+(?:[.,]\d+)?))?'
     match = re.search(xyz_pattern, text_to_search)
     if match:
@@ -45,7 +43,6 @@ def extract_dimensions_from_string(text_to_search):
 
 def clean_feature_list(features_str):
     if pd.isna(features_str) or features_str == "": return []
-    # Satır sonlarına veya \n ifadesine göre böler
     features = re.split(r'\s*(?:\\n|\n)\s*', str(features_str).strip())
     return [f.strip() for f in features if f and f.strip()]
 
@@ -53,11 +50,8 @@ def convert_size_value(val, unit_choice):
     if val is None or val == '' or (isinstance(val, float) and math.isnan(val)): return ''
     try:
         num_val = float(str(val).replace(',', '.'))
-        if unit_choice == "inch":
-            return round(num_val * CM_TO_INCH, 2)
-        return round(num_val, 2)
-    except:
-        return val
+        return round(num_val * CM_TO_INCH, 2) if unit_choice == "inch" else round(num_val, 2)
+    except: return val
 
 def convert_weight_value(val_kg, weight_unit_choice):
     if val_kg is None or val_kg == '' or (isinstance(val_kg, float) and math.isnan(val_kg)): return ''
@@ -65,162 +59,144 @@ def convert_weight_value(val_kg, weight_unit_choice):
         num_val = float(str(val_kg).replace(',', '.'))
         if weight_unit_choice == "LBS":
             c_lbs = round(num_val * KG_TO_LBS, 2)
-            p_lbs = max(0.0, round(c_lbs - 0.01, 2))
-            return c_lbs, p_lbs
+            return c_lbs, max(0.0, round(c_lbs - 0.01, 2))
         return round(num_val, 2), round(num_val, 2)
-    except:
-        return val_kg, val_kg
+    except: return val_kg, val_kg
 
-# --- Streamlit Arayüzü ---
-st.set_page_config(page_title="Asir Tools", layout="wide")
-st.title("📊 Excel Veri Dönüştürücü")
+# --- YARDIMCI FONKSİYONLAR (PO TRACKING ARACI İÇİN) ---
+def process_pdfs(pdf_files):
+    all_data = {}
+    po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
+    trk_pattern = re.compile(r"(\d{12,})")
+    
+    for pdf_file in pdf_files:
+        try:
+            reader = pypdf.PdfReader(pdf_file)
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    chunks = po_pattern.split(text)
+                    for j in range(1, len(chunks), 2):
+                        po = chunks[j]
+                        trks = trk_pattern.findall(chunks[j+1])
+                        if trks:
+                            if po not in all_data: all_data[po] = set()
+                            for t in trks: all_data[po].add(t)
+        except Exception as e:
+            st.error(f"Dosya okuma hatası: {pdf_file.name} - {e}")
+    
+    final_rows = []
+    for po, trks in all_data.items():
+        for t in list(trks):
+            final_rows.append({"PO": po, "Tracking Number": t})
+    return pd.DataFrame(final_rows)
 
-# Sidebar Ayarları
+# --- ANA SAYFA AYARLARI ---
+st.set_page_config(page_title="Asir Tools Pro", layout="wide")
+
+# SOL MENÜ (NAVİGASYON)
 with st.sidebar:
-    st.header("⚙️ Ayarlar")
-    size_unit = st.radio("Ölçü Birimi (Boyut):", ("cm", "inch"), index=1)
-    weight_unit = st.radio("Ağırlık Birimi:", ("KG", "LBS"), index=1)
-    
+    st.title("🛠️ Asir Tools")
+    page = st.radio("Bir araç seçin:", ["Excel Dönüştürücü", "PO Tracking Çıkarıcı"])
     st.divider()
-    st.subheader("Özellik (Feature) Ayarları")
-    add_made_in_tr = st.checkbox("Made in Türkiye Eklensin mi?", value=True)
-    feature_count = st.slider("Özellik Kolon Sayısı:", min_value=1, max_value=10, value=5)
-    
-    st.divider()
-    if st.button("🏠 Ana Sayfa", use_container_width=True):
+    if st.button("🏠 Ana Sayfa / Sıfırla", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
 
-uploaded_file = st.file_uploader("İşlemek istediğiniz Excel dosyasını seçin", type=["xlsx", "xls"])
+# --- SAYFA 1: EXCEL DÖNÜŞTÜRÜCÜ ---
+if page == "Excel Dönüştürücü":
+    st.header("📊 Excel Veri Dönüştürücü")
+    with st.sidebar:
+        st.subheader("⚙️ Excel Ayarları")
+        size_unit = st.radio("Ölçü Birimi:", ("cm", "inch"), index=1)
+        weight_unit = st.radio("Ağırlık Birimi:", ("KG", "LBS"), index=1)
+        add_made_in_tr = st.checkbox("Made in Türkiye Eklensin mi?", value=True)
+        feature_count = st.slider("Özellik Kolon Sayısı:", 1, 10, 5)
 
-if uploaded_file:
-    try:
-        input_filename = uploaded_file.name
-        file_base, file_ext = os.path.splitext(input_filename)
-        output_filename = f"{file_base}_islenmis{file_ext}"
-
-        df = pd.read_excel(uploaded_file, dtype=str).fillna('')
-        processed_data = []
-        size_label = f"({size_unit})"
-        weight_label = f"({weight_unit})"
-        
-        # Dinamik Özellik Başlıkları Oluşturma
-        feature_headers = [f'Feature {i+1}' for i in range(feature_count)]
-        
-        output_headers = [
-            'CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION'
-        ] + feature_headers + [
-            'IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', 
-            f'WEIGHT {weight_label}',
-            f'PRODUCT SIZE - X {size_label}', f'PRODUCT SIZE - Y {size_label}', f'PRODUCT SIZE - Z {size_label}',
-            f'CARTON WEIGHT {weight_label}',
-            f'PACKAGING SIZE - X {size_label}', f'PACKAGING SIZE - Y {size_label}', f'PACKAGING SIZE - Z {size_label}'
-        ]
-
-        for index, row in df.iterrows():
-            code_val = str(row.get('CODE', '')).strip()
-            if not code_val or code_val.lower() == 'nan':
-                continue
-
-            # 1. Özellikleri topla ve temizle
-            features_text = str(row.get('FEATURES', ''))
-            extra_text = str(row.get('EXTRA FEATURES', ''))
-            feat_list = clean_feature_list(features_text)
-            if "number of packages" not in extra_text.lower():
-                feat_list.extend(clean_feature_list(extra_text))
+    uploaded_file = st.file_uploader("Excel dosyasını yükleyin", type=["xlsx", "xls"])
+    if uploaded_file:
+        try:
+            input_filename = uploaded_file.name
+            file_base, file_ext = os.path.splitext(input_filename)
+            output_filename = f"{file_base}_islenmis{file_ext}"
+            df = pd.read_excel(uploaded_file, dtype=str).fillna('')
+            processed_data = []
             
-            # 2. Boyutları çıkar (ham metin üzerinden)
-            dims = extract_dimensions_from_string(features_text + "\n" + extra_text)
-            p_x, p_y, p_z = dims if dims else ('', '', '')
+            f_headers = [f'Feature {i+1}' for i in range(feature_count)]
+            output_headers = ['CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION'] + f_headers + \
+                             ['IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', f'WEIGHT ({weight_unit})',
+                              f'PRODUCT SIZE - X ({size_unit})', f'PRODUCT SIZE - Y ({size_unit})', f'PRODUCT SIZE - Z ({size_unit})',
+                              f'CARTON WEIGHT ({weight_unit})', f'PACKAGING SIZE - X ({size_unit})', f'PACKAGING SIZE - Y ({size_unit})', f'PACKAGING SIZE - Z ({size_unit})']
 
-            # 3. Made in Türkiye Ekleme (Seçenek aktifse)
-            if add_made_in_tr:
-                if not any(MADE_IN_TURKEY in str(f) for f in feat_list):
-                    feat_list.append(MADE_IN_TURKEY)
-
-            # 4. Özellikleri Kolonlara Dağıt (Dinamik Mantık)
-            feature_cols = [""] * feature_count
-            if feature_count > 1:
-                # Son kolon hariç her birine bir madde
-                for i in range(min(len(feat_list), feature_count - 1)):
-                    feature_cols[i] = feat_list[i]
-                # Geri kalan her şeyi son kolona ekle
-                if len(feat_list) >= feature_count:
-                    feature_cols[feature_count-1] = "\n".join(feat_list[feature_count-1:])
-            elif feature_count == 1 and feat_list:
-                feature_cols[0] = "\n".join(feat_list)
-
-            # 5. Ağırlık Dönüşümü
-            c_weight, p_weight = convert_weight_value(row.get('WEIGHT (Kg)', ''), weight_unit)
-
-            # 6. Satırı Oluştur
-            processed_row = [
-                code_val, row.get('EAN CODE', ''), 
-                str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', '')
-            ] + feature_cols + [
-                row.get('IMAGE', ''), row.get('PRICE', ''), '', 
-                row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
-                p_weight,
-                convert_size_value(p_x, size_unit), convert_size_value(p_y, size_unit), convert_size_value(p_z, size_unit),
-                c_weight,
-                convert_size_value(row.get('PACKAGING SIZE - X (cm)', ''), size_unit),
-                convert_size_value(row.get('PACKAGING SIZE - Y (cm)', ''), size_unit),
-                convert_size_value(row.get('PACKAGING SIZE - Z (cm)', ''), size_unit)
-            ]
-            processed_data.append(processed_row)
-
-        output_df = pd.DataFrame(processed_data, columns=output_headers)
-        st.success(f"✅ İşlem tamamlandı! {len(output_df)} ürün hazır.")
-        st.dataframe(output_df)
-
-        output = io.BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            output_df.to_excel(writer, index=False, sheet_name='Sheet1')
-            worksheet = writer.sheets['Sheet1']
-            
-            wrap_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
-            wrap_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
-            
-            for col_idx, column_name in enumerate(output_headers, 1):
-                column_letter = worksheet.cell(row=1, column=col_idx).column_letter
+            for index, row in df.iterrows():
+                code = str(row.get('CODE', '')).strip()
+                if not code or code.lower() == 'nan': continue
                 
-                # Genişlik Ayarları
-                if "Feature" in str(column_name):
-                    worksheet.column_dimensions[column_letter].width = 15
-                elif any(word in str(column_name) for word in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
-                    max_data_len = 0
-                    for row_idx in range(2, len(output_df) + 2):
-                        val = worksheet.cell(row=row_idx, column=col_idx).value
-                        max_data_len = max(max_data_len, len(str(val)) if val else 0)
-                    worksheet.column_dimensions[column_letter].width = max_data_len + 5 
-                else:
-                    max_len = 0
-                    for row_idx in range(1, len(output_df) + 2):
-                        val = worksheet.cell(row=row_idx, column=col_idx).value
-                        max_len = max(max_len, len(str(val)) if val else 0)
-                    worksheet.column_dimensions[column_letter].width = min(max_len + 2, 40)
+                feat_list = clean_feature_list(row.get('FEATURES', ''))
+                extra = str(row.get('EXTRA FEATURES', ''))
+                if "number of packages" not in extra.lower(): feat_list.extend(clean_feature_list(extra))
+                if add_made_in_tr and not any(MADE_IN_TURKEY in str(f) for f in feat_list): feat_list.append(MADE_IN_TURKEY)
+                
+                f_cols = [""] * feature_count
+                if feature_count > 1:
+                    for i in range(min(len(feat_list), feature_count - 1)): f_cols[i] = feat_list[i]
+                    if len(feat_list) >= feature_count: f_cols[feature_count-1] = "\n".join(feat_list[feature_count-1:])
+                elif feat_list: f_cols[0] = "\n".join(feat_list)
 
-                for row_idx in range(1, len(output_df) + 2):
-                    cell = worksheet.cell(row=row_idx, column=col_idx)
-                    if row_idx == 1:
-                        cell.alignment = wrap_center
+                dims = extract_dimensions_from_string(str(row.get('FEATURES', '')) + "\n" + extra)
+                px, py, pz = dims if dims else ('', '', '')
+                c_w, p_w = convert_weight_value(row.get('WEIGHT (Kg)', ''), weight_unit)
+
+                processed_data.append([code, row.get('EAN CODE', ''), str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', '')] + f_cols + \
+                                      [row.get('IMAGE', ''), row.get('PRICE', ''), '', row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
+                                       p_w, convert_size_value(px, size_unit), convert_size_value(py, size_unit), convert_size_value(pz, size_unit),
+                                       c_w, convert_size_value(row.get('PACKAGING SIZE - X (cm)', ''), size_unit),
+                                       convert_size_value(row.get('PACKAGING SIZE - Y (cm)', ''), size_unit), convert_size_value(row.get('PACKAGING SIZE - Z (cm)', ''), size_unit)])
+
+            out_df = pd.DataFrame(processed_data, columns=output_headers)
+            st.success(f"✅ Hazır: {output_filename}")
+            st.dataframe(out_df)
+
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                out_df.to_excel(writer, index=False, sheet_name='Sheet1')
+                ws = writer.sheets['Sheet1']
+                al_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                al_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+                for c_idx, c_name in enumerate(output_headers, 1):
+                    letter = ws.cell(row=1, column=c_idx).column_letter
+                    if "Feature" in str(c_name): ws.column_dimensions[letter].width = 15
                     else:
-                        cell.alignment = wrap_left if "Feature" in str(column_name) else wrap_center
+                        m_len = max([len(str(ws.cell(row=r, column=c_idx).value)) for r in range(1, len(out_df)+2)] + [0])
+                        ws.column_dimensions[letter].width = min(m_len + 2, 40)
+                    for r_idx in range(1, len(out_df) + 2):
+                        cell = ws.cell(row=r_idx, column=c_idx)
+                        cell.alignment = al_left if (r_idx > 1 and "Feature" in str(c_name)) else al_center
+                        if r_idx > 1: ws.row_dimensions[r_idx].height = 15
+                ws.row_dimensions[1].height = 45
+
+            st.download_button("📥 İşlenmiş Excel'i İndir", output.getvalue(), output_filename, use_container_width=True)
+        except Exception as e: st.error(f"Hata: {e}")
+
+# --- SAYFA 2: PO TRACKING ---
+elif page == "PO Tracking Çıkarıcı":
+    st.header("📄 PDF'den PO ve Tracking Numarası Çıkarıcı")
+    st.write("Bilgisayarındaki PDF dosyalarını buraya yükle, PO ve Tracking numaralarını Excel olarak al.")
+    
+    pdf_files = st.file_uploader("PDF dosyalarını seçin (Çoklu seçim yapabilirsiniz)", type="pdf", accept_multiple_files=True)
+    
+    if pdf_files:
+        if st.button("🚀 Dosyaları İşle", use_container_width=True):
+            with st.spinner("PDF'ler taranıyor..."):
+                results_df = process_pdfs(pdf_files)
+                if not results_df.empty:
+                    st.success(f"✅ {len(results_df)} adet veri çıkarıldı!")
+                    st.dataframe(results_df)
                     
-                    if row_idx > 1:
-                        worksheet.row_dimensions[row_idx].height = 15
-
-            worksheet.row_dimensions[1].height = 45
-
-        st.download_button(
-            label=f"📥 İşlenmiş Excel'i İndir",
-            data=output.getvalue(),
-            file_name=output_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
-
-    except Exception as e:
-        st.error(f"Beklenmedik bir hata oluştu: {e}")
-else:
-    st.info("👋 Hoş geldiniz! Lütfen işlem yapmak istediğiniz Excel dosyasını yukarıdan seçin.")
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        results_df.to_excel(writer, index=False)
+                    
+                    st.download_button("📥 Sonuçları Excel Olarak İndir", output.getvalue(), "PO_Tracking_Listesi.xlsx", use_container_width=True)
+                else:
+                    st.warning("Hiç PO veya Tracking numarası bulunamadı.")
