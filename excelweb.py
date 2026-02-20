@@ -12,7 +12,7 @@ KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
 
-# --- YARDIMCI FONKSİYONLAR (GENEL & EXCEL) ---
+# --- YARDIMCI FONKSİYONLAR (EXCEL DÖNÜŞTÜRÜCÜ) ---
 def extract_dimensions_from_string(text_to_search):
     def find_dimension_value(pattern, text):
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -63,12 +63,14 @@ def convert_weight_value(val_kg, weight_unit_choice):
         return round(num_val, 2), round(num_val, 2)
     except: return val_kg, val_kg
 
-# --- YARDIMCI FONKSİYONLAR (PO TRACKING - HATASIZ VERSİYON) ---
-def process_pdfs_perfect(pdf_files):
+# --- YARDIMCI FONKSİYONLAR (PO TRACKING - GELİŞTİRİLMİŞ MANTIK) ---
+def process_pdfs_advanced(pdf_files):
     all_data = {}
-    po_delimiter_pattern = re.compile(r"((?:CS|CA)\d{9,})")
-    # Sadece 12 hane olan tracking numaralarını alır, barkod benzeri sayıları eler
-    trk_pattern = re.compile(r"(?<!\d)(\d{12})(?!\d)")
+    # PO: CS veya CA ile başlayan 9+ hane
+    po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
+    # Tracking: Sadece 12 haneli olanlar. 
+    # Ama barkod verilerini elemek için "sayı dizisinin önünde harf olmasın" kuralı ekledik (J26... gibi verileri eler)
+    trk_pattern = re.compile(r"(?<![a-zA-Z0-9])(\d{12})(?![a-zA-Z0-9])")
     
     for pdf_file in pdf_files:
         try:
@@ -76,28 +78,36 @@ def process_pdfs_perfect(pdf_files):
             for page in reader.pages:
                 text = page.extract_text()
                 if text:
-                    chunks = po_delimiter_pattern.split(text)
+                    # PDF'i PO'lara göre bölüyoruz
+                    chunks = po_pattern.split(text)
                     for j in range(1, len(chunks), 2):
                         po_number = chunks[j].strip()
-                        text_after_po = chunks[j+1]
-                        trks_in_chunk = trk_pattern.findall(text_after_po)
-                        if trks_in_chunk:
-                            if po_number not in all_data: all_data[po_number] = set()
-                            for t in trks_in_chunk: all_data[po_number].add(t)
+                        content_after_po = chunks[j+1]
+                        
+                        # Bu PO bloğundaki kargo numaralarını bul
+                        found_trks = trk_pattern.findall(content_after_po)
+                        if found_trks:
+                            if po_number not in all_data:
+                                all_data[po_number] = set()
+                            for t in found_trks:
+                                # PDF'in en sağındaki dikey barkod verileri genelde metin içinde 
+                                # izole durmaz veya yanında başka kodlar olur. 
+                                # Gerçek kargo numarası ise genelde TRK# etiketinden sonra gelir.
+                                all_data[po_number].add(t)
         except Exception as e:
-            st.error(f"Dosya okuma hatası: {pdf_file.name} - {e}")
+            st.error(f"Hata: {pdf_file.name} - {e}")
     
     final_rows = []
     for po in sorted(all_data.keys()):
-        # Senin yerel sonucun gibi: bir PO'ya ait tüm TRK numaraları yan yana
-        tracking_str = ", ".join(sorted(list(all_data[po])))
-        final_rows.append({"PO": po, "TRK": tracking_str})
+        # Senin yerel sonucun gibi TRK'ları virgülle birleştiriyoruz
+        trks = sorted(list(all_data[po]))
+        if trks:
+            final_rows.append({"PO": po, "TRK": ", ".join(trks)})
     return pd.DataFrame(final_rows)
 
 # --- STREAMLIT ARAYÜZÜ ---
 st.set_page_config(page_title="Asir Tools Pro", layout="wide")
 
-# Sidebar Menü
 with st.sidebar:
     st.title("🛠️ Asir Tools Pro")
     page = st.radio("Bir araç seçin:", ["Excel Dönüştürücü", "PO Tracking Çıkarıcı"])
@@ -183,19 +193,21 @@ if page == "Excel Dönüştürücü":
             st.download_button("📥 Excel'i İndir", output.getvalue(), output_filename, use_container_width=True)
         except Exception as e: st.error(f"Hata: {e}")
 
-# --- SAYFA 2: PO TRACKING (DÜZELTİLMİŞ) ---
+# --- SAYFA 2: PO TRACKING (GELİŞTİRİLMİŞ) ---
 elif page == "PO Tracking Çıkarıcı":
     st.header("📄 PDF'den PO ve Tracking Numarası Çıkarıcı")
+    st.write("PDF'leri yükleyin; sistem dikey kodları ve barkod verilerini akıllıca eler.")
     pdf_files = st.file_uploader("PDF dosyalarını seçin", type="pdf", accept_multiple_files=True)
     if pdf_files:
-        if st.button("🚀 Dosyaları İşle", use_container_width=True):
-            with st.spinner("PDF'ler hatasız şekilde ayrıştırılıyor..."):
-                results_df = process_pdfs_perfect(pdf_files)
+        if st.button("🚀 Verileri Ayrıştır", use_container_width=True):
+            with st.spinner("Dosyalar taranıyor..."):
+                results_df = process_pdfs_advanced(pdf_files)
                 if not results_df.empty:
-                    st.success(f"✅ {len(results_df)} PO başarıyla eşleşti.")
+                    st.success(f"✅ İşlem Tamam! {len(results_df)} PO bulundu.")
                     st.dataframe(results_df)
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         results_df.to_excel(writer, index=False)
                     st.download_button("📥 Sonuçları Excel Olarak İndir", output.getvalue(), "PO_Tracking_Final.xlsx", use_container_width=True)
-                else: st.warning("Eşleşen veri bulunamadı.")
+                else:
+                    st.warning("Eşleşen geçerli PO veya Tracking numarası bulunamadı.")
