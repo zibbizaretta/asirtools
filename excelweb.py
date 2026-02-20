@@ -3,16 +3,17 @@ import math
 import re
 import io
 import os
+from datetime import datetime # 👈 Tarih için eklendi
 import streamlit as st
 import pypdf
 from openpyxl.styles import Alignment
 
-# --- SABİTLER ---
+# --- CONSTANTS ---
 KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
 
-# --- YARDIMCI FONKSİYONLAR (EXCEL DÖNÜŞTÜRÜCÜ) ---
+# --- HELPER FUNCTIONS (EXCEL TRANSFORMER) ---
 def extract_dimensions_from_string(text_to_search):
     def find_dimension_value(pattern, text):
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -63,13 +64,11 @@ def convert_weight_value(val_kg, weight_unit_choice):
         return round(num_val, 2), round(num_val, 2)
     except: return val_kg, val_kg
 
-# --- YARDIMCI FONKSİYONLAR (PO TRACKING - GELİŞTİRİLMİŞ MANTIK) ---
+# --- HELPER FUNCTIONS (PO TRACKING EXTRACTOR) ---
 def process_pdfs_advanced(pdf_files):
     all_data = {}
-    # PO: CS veya CA ile başlayan 9+ hane
     po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
-    # Tracking: Sadece 12 haneli olanlar. 
-    # Ama barkod verilerini elemek için "sayı dizisinin önünde harf olmasın" kuralı ekledik (J26... gibi verileri eler)
+    # Gelişmiş Tracking Regex: Sadece izole duran 12 haneli sayıları alır
     trk_pattern = re.compile(r"(?<![a-zA-Z0-9])(\d{12})(?![a-zA-Z0-9])")
     
     for pdf_file in pdf_files:
@@ -78,59 +77,51 @@ def process_pdfs_advanced(pdf_files):
             for page in reader.pages:
                 text = page.extract_text()
                 if text:
-                    # PDF'i PO'lara göre bölüyoruz
                     chunks = po_pattern.split(text)
                     for j in range(1, len(chunks), 2):
                         po_number = chunks[j].strip()
                         content_after_po = chunks[j+1]
-                        
-                        # Bu PO bloğundaki kargo numaralarını bul
                         found_trks = trk_pattern.findall(content_after_po)
                         if found_trks:
-                            if po_number not in all_data:
-                                all_data[po_number] = set()
-                            for t in found_trks:
-                                # PDF'in en sağındaki dikey barkod verileri genelde metin içinde 
-                                # izole durmaz veya yanında başka kodlar olur. 
-                                # Gerçek kargo numarası ise genelde TRK# etiketinden sonra gelir.
-                                all_data[po_number].add(t)
+                            if po_number not in all_data: all_data[po_number] = set()
+                            for t in found_trks: all_data[po_number].add(t)
         except Exception as e:
-            st.error(f"Hata: {pdf_file.name} - {e}")
+            st.error(f"Error: {pdf_file.name} - {e}")
     
     final_rows = []
     for po in sorted(all_data.keys()):
-        # Senin yerel sonucun gibi TRK'ları virgülle birleştiriyoruz
         trks = sorted(list(all_data[po]))
         if trks:
             final_rows.append({"PO": po, "TRK": ", ".join(trks)})
     return pd.DataFrame(final_rows)
 
-# --- STREAMLIT ARAYÜZÜ ---
+# --- APP INTERFACE ---
 st.set_page_config(page_title="Asir Tools Pro", layout="wide")
 
 with st.sidebar:
     st.title("🛠️ Asir Tools Pro")
-    page = st.radio("Bir araç seçin:", ["Excel Dönüştürücü", "PO Tracking Çıkarıcı"])
+    # İsimlendirmeler İngilizce olarak güncellendi
+    page = st.radio("Select Tool:", ["Excel Transformer", "PO Tracking Extractor"])
     st.divider()
-    if st.button("🏠 Ana Sayfa", use_container_width=True):
+    if st.button("🏠 Home / Reset", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
 
-# --- SAYFA 1: EXCEL DÖNÜŞTÜRÜCÜ ---
-if page == "Excel Dönüştürücü":
-    st.header("📊 Excel Veri Dönüştürücü")
+# --- PAGE 1: EXCEL TRANSFORMER ---
+if page == "Excel Transformer":
+    st.header("📊 Excel Transformer")
     with st.sidebar:
-        st.subheader("⚙️ Excel Ayarları")
-        size_unit = st.radio("Ölçü Birimi:", ("cm", "inch"), index=1)
-        weight_unit = st.radio("Ağırlık Birimi:", ("KG", "LBS"), index=1)
-        add_made_in_tr = st.checkbox("Made in Türkiye Eklensin mi?", value=True)
-        feature_count = st.slider("Özellik Kolon Sayısı:", 1, 10, 5)
+        st.subheader("⚙️ Settings")
+        size_unit = st.radio("Size Unit:", ("cm", "inch"), index=1)
+        weight_unit = st.radio("Weight Unit:", ("KG", "LBS"), index=1)
+        add_made_in_tr = st.checkbox("Add 'Made in Türkiye'", value=True)
+        feature_count = st.slider("Feature Column Count:", 1, 10, 5)
 
-    uploaded_file = st.file_uploader("Excel dosyasını yükleyin", type=["xlsx", "xls"])
+    uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
     if uploaded_file:
         try:
             file_base, file_ext = os.path.splitext(uploaded_file.name)
-            output_filename = f"{file_base}_islenmis{file_ext}"
+            output_filename = f"{file_base}_processed{file_ext}"
             df = pd.read_excel(uploaded_file, dtype=str).fillna('')
             processed_data = []
             
@@ -144,22 +135,18 @@ if page == "Excel Dönüştürücü":
             for index, row in df.iterrows():
                 code = str(row.get('CODE', '')).strip()
                 if not code or code.lower() == 'nan': continue
-                
                 feat_list = clean_feature_list(row.get('FEATURES', ''))
                 extra = str(row.get('EXTRA FEATURES', ''))
                 if "number of packages" not in extra.lower(): feat_list.extend(clean_feature_list(extra))
                 if add_made_in_tr and not any(MADE_IN_TURKEY in str(f) for f in feat_list): feat_list.append(MADE_IN_TURKEY)
-                
                 f_cols = [""] * feature_count
                 if feature_count > 1:
                     for i in range(min(len(feat_list), feature_count - 1)): f_cols[i] = feat_list[i]
                     if len(feat_list) >= feature_count: f_cols[feature_count-1] = "\n".join(feat_list[feature_count-1:])
                 elif feat_list: f_cols[0] = "\n".join(feat_list)
-
                 dims = extract_dimensions_from_string(str(row.get('FEATURES', '')) + "\n" + extra)
                 px, py, pz = dims if dims else ('', '', '')
                 c_w, p_w = convert_weight_value(row.get('WEIGHT (Kg)', ''), weight_unit)
-
                 processed_data.append([code, row.get('EAN CODE', ''), str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', '')] + f_cols + \
                                       [row.get('IMAGE', ''), row.get('PRICE', ''), '', row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
                                        p_w, convert_size_value(px, size_unit), convert_size_value(py, size_unit), convert_size_value(pz, size_unit),
@@ -167,7 +154,7 @@ if page == "Excel Dönüştürücü":
                                        convert_size_value(row.get('PACKAGING SIZE - Y (cm)', ''), size_unit), convert_size_value(row.get('PACKAGING SIZE - Z (cm)', ''), size_unit)])
 
             out_df = pd.DataFrame(processed_data, columns=output_headers)
-            st.success(f"✅ Hazır: {output_filename}")
+            st.success(f"✅ Ready: {output_filename}")
             st.dataframe(out_df)
 
             output = io.BytesIO()
@@ -190,24 +177,27 @@ if page == "Excel Dönüştürücü":
                         cell.alignment = al_left if (r_idx > 1 and "Feature" in str(c_name)) else al_center
                         if r_idx > 1: ws.row_dimensions[r_idx].height = 15
                 ws.row_dimensions[1].height = 45
-            st.download_button("📥 Excel'i İndir", output.getvalue(), output_filename, use_container_width=True)
-        except Exception as e: st.error(f"Hata: {e}")
+            st.download_button("📥 Download Processed Excel", output.getvalue(), output_filename, use_container_width=True)
+        except Exception as e: st.error(f"Error: {e}")
 
-# --- SAYFA 2: PO TRACKING (GELİŞTİRİLMİŞ) ---
-elif page == "PO Tracking Çıkarıcı":
-    st.header("📄 PDF'den PO ve Tracking Numarası Çıkarıcı")
-    st.write("PDF'leri yükleyin; sistem dikey kodları ve barkod verilerini akıllıca eler.")
-    pdf_files = st.file_uploader("PDF dosyalarını seçin", type="pdf", accept_multiple_files=True)
+# --- PAGE 2: PO TRACKING EXTRACTOR ---
+elif page == "PO Tracking Extractor":
+    st.header("📄 PO Tracking Extractor")
+    pdf_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
     if pdf_files:
-        if st.button("🚀 Verileri Ayrıştır", use_container_width=True):
-            with st.spinner("Dosyalar taranıyor..."):
+        if st.button("🚀 Extract Data", use_container_width=True):
+            with st.spinner("Extracting tracking numbers..."):
                 results_df = process_pdfs_advanced(pdf_files)
                 if not results_df.empty:
-                    st.success(f"✅ İşlem Tamam! {len(results_df)} PO bulundu.")
+                    st.success(f"✅ Success! {len(results_df)} POs matched.")
                     st.dataframe(results_df)
+                    
+                    # Dinamik Tarihli Dosya İsmi
+                    current_date = datetime.now().strftime("%d-%m-%Y")
+                    date_filename = f"{current_date}_Tracking_List.xlsx"
+                    
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         results_df.to_excel(writer, index=False)
-                    st.download_button("📥 Sonuçları Excel Olarak İndir", output.getvalue(), "PO_Tracking_Final.xlsx", use_container_width=True)
-                else:
-                    st.warning("Eşleşen geçerli PO veya Tracking numarası bulunamadı.")
+                    st.download_button(f"📥 Download {date_filename}", output.getvalue(), date_filename, use_container_width=True)
+                else: st.warning("No valid tracking numbers found.")
