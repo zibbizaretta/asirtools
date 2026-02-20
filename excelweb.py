@@ -3,7 +3,7 @@ import math
 import re
 import io
 import os
-from datetime import datetime # 👈 Tarih için eklendi
+from datetime import datetime
 import streamlit as st
 import pypdf
 from openpyxl.styles import Alignment
@@ -13,7 +13,7 @@ KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
 
-# --- HELPER FUNCTIONS (EXCEL TRANSFORMER) ---
+# --- HELPER FUNCTIONS (WF TEMPLATE TOOL) ---
 def extract_dimensions_from_string(text_to_search):
     def find_dimension_value(pattern, text):
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -64,13 +64,11 @@ def convert_weight_value(val_kg, weight_unit_choice):
         return round(num_val, 2), round(num_val, 2)
     except: return val_kg, val_kg
 
-# --- HELPER FUNCTIONS (PO TRACKING EXTRACTOR) ---
+# --- HELPER FUNCTIONS (PO TRACKING TOOL) ---
 def process_pdfs_advanced(pdf_files):
     all_data = {}
     po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
-    # Gelişmiş Tracking Regex: Sadece izole duran 12 haneli sayıları alır
     trk_pattern = re.compile(r"(?<![a-zA-Z0-9])(\d{12})(?![a-zA-Z0-9])")
-    
     for pdf_file in pdf_files:
         try:
             reader = pypdf.PdfReader(pdf_file)
@@ -87,7 +85,6 @@ def process_pdfs_advanced(pdf_files):
                             for t in found_trks: all_data[po_number].add(t)
         except Exception as e:
             st.error(f"Error: {pdf_file.name} - {e}")
-    
     final_rows = []
     for po in sorted(all_data.keys()):
         trks = sorted(list(all_data[po]))
@@ -96,22 +93,21 @@ def process_pdfs_advanced(pdf_files):
     return pd.DataFrame(final_rows)
 
 # --- APP INTERFACE ---
-st.set_page_config(page_title="Asir Tools Pro", layout="wide")
+st.set_page_config(page_title="Asir Tools", layout="wide")
 
 with st.sidebar:
-    st.title("🛠️ Asir Tools Pro")
-    # İsimlendirmeler İngilizce olarak güncellendi
-    page = st.radio("Select Tool:", ["Excel Transformer", "PO Tracking Extractor"])
+    st.title("Asir Tools")
+    page = st.radio("Select Tool:", ["WF Template Tool", "PO Tracking Tool"])
     st.divider()
-    if st.button("🏠 Home / Reset", use_container_width=True):
+    if st.button("Home / Reset", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
 
-# --- PAGE 1: EXCEL TRANSFORMER ---
-if page == "Excel Transformer":
-    st.header("📊 Excel Transformer")
+# --- PAGE 1: WF TEMPLATE TOOL ---
+if page == "WF Template Tool":
+    st.header("WF Template Tool")
     with st.sidebar:
-        st.subheader("⚙️ Settings")
+        st.subheader("Settings")
         size_unit = st.radio("Size Unit:", ("cm", "inch"), index=1)
         weight_unit = st.radio("Weight Unit:", ("KG", "LBS"), index=1)
         add_made_in_tr = st.checkbox("Add 'Made in Türkiye'", value=True)
@@ -154,7 +150,6 @@ if page == "Excel Transformer":
                                        convert_size_value(row.get('PACKAGING SIZE - Y (cm)', ''), size_unit), convert_size_value(row.get('PACKAGING SIZE - Z (cm)', ''), size_unit)])
 
             out_df = pd.DataFrame(processed_data, columns=output_headers)
-            st.success(f"✅ Ready: {output_filename}")
             st.dataframe(out_df)
 
             output = io.BytesIO()
@@ -177,27 +172,23 @@ if page == "Excel Transformer":
                         cell.alignment = al_left if (r_idx > 1 and "Feature" in str(c_name)) else al_center
                         if r_idx > 1: ws.row_dimensions[r_idx].height = 15
                 ws.row_dimensions[1].height = 45
-            st.download_button("📥 Download Processed Excel", output.getvalue(), output_filename, use_container_width=True)
+            st.download_button("Download Processed Excel", output.getvalue(), output_filename, use_container_width=True)
         except Exception as e: st.error(f"Error: {e}")
 
-# --- PAGE 2: PO TRACKING EXTRACTOR ---
-elif page == "PO Tracking Extractor":
-    st.header("📄 PO Tracking Extractor")
+# --- PAGE 2: PO TRACKING TOOL ---
+elif page == "PO Tracking Tool":
+    st.header("PO Tracking Tool")
     pdf_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
     if pdf_files:
-        if st.button("🚀 Extract Data", use_container_width=True):
-            with st.spinner("Extracting tracking numbers..."):
+        if st.button("Extract Data", use_container_width=True):
+            with st.spinner("Processing..."):
                 results_df = process_pdfs_advanced(pdf_files)
                 if not results_df.empty:
-                    st.success(f"✅ Success! {len(results_df)} POs matched.")
                     st.dataframe(results_df)
-                    
-                    # Dinamik Tarihli Dosya İsmi
                     current_date = datetime.now().strftime("%d-%m-%Y")
                     date_filename = f"{current_date}_Tracking_List.xlsx"
-                    
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         results_df.to_excel(writer, index=False)
-                    st.download_button(f"📥 Download {date_filename}", output.getvalue(), date_filename, use_container_width=True)
+                    st.download_button(f"Download {date_filename}", output.getvalue(), date_filename, use_container_width=True)
                 else: st.warning("No valid tracking numbers found.")
