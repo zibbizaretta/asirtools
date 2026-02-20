@@ -7,12 +7,12 @@ import streamlit as st
 import pypdf
 from openpyxl.styles import Alignment
 
-# --- Sabitler ---
+# --- SABİTLER ---
 KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
 
-# --- YARDIMCI FONKSİYONLAR (EXCEL ARACI İÇİN) ---
+# --- YARDIMCI FONKSİYONLAR (GENEL & EXCEL) ---
 def extract_dimensions_from_string(text_to_search):
     def find_dimension_value(pattern, text):
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -63,11 +63,12 @@ def convert_weight_value(val_kg, weight_unit_choice):
         return round(num_val, 2), round(num_val, 2)
     except: return val_kg, val_kg
 
-# --- YARDIMCI FONKSİYONLAR (PO TRACKING ARACI İÇİN) ---
-def process_pdfs(pdf_files):
+# --- YARDIMCI FONKSİYONLAR (PO TRACKING - HATASIZ VERSİYON) ---
+def process_pdfs_perfect(pdf_files):
     all_data = {}
-    po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
-    trk_pattern = re.compile(r"(\d{12,})")
+    po_delimiter_pattern = re.compile(r"((?:CS|CA)\d{9,})")
+    # Sadece 12 hane olan tracking numaralarını alır, barkod benzeri sayıları eler
+    trk_pattern = re.compile(r"(?<!\d)(\d{12})(?!\d)")
     
     for pdf_file in pdf_files:
         try:
@@ -75,31 +76,33 @@ def process_pdfs(pdf_files):
             for page in reader.pages:
                 text = page.extract_text()
                 if text:
-                    chunks = po_pattern.split(text)
+                    chunks = po_delimiter_pattern.split(text)
                     for j in range(1, len(chunks), 2):
-                        po = chunks[j]
-                        trks = trk_pattern.findall(chunks[j+1])
-                        if trks:
-                            if po not in all_data: all_data[po] = set()
-                            for t in trks: all_data[po].add(t)
+                        po_number = chunks[j].strip()
+                        text_after_po = chunks[j+1]
+                        trks_in_chunk = trk_pattern.findall(text_after_po)
+                        if trks_in_chunk:
+                            if po_number not in all_data: all_data[po_number] = set()
+                            for t in trks_in_chunk: all_data[po_number].add(t)
         except Exception as e:
             st.error(f"Dosya okuma hatası: {pdf_file.name} - {e}")
     
     final_rows = []
-    for po, trks in all_data.items():
-        for t in list(trks):
-            final_rows.append({"PO": po, "Tracking Number": t})
+    for po in sorted(all_data.keys()):
+        # Senin yerel sonucun gibi: bir PO'ya ait tüm TRK numaraları yan yana
+        tracking_str = ", ".join(sorted(list(all_data[po])))
+        final_rows.append({"PO": po, "TRK": tracking_str})
     return pd.DataFrame(final_rows)
 
-# --- ANA SAYFA AYARLARI ---
+# --- STREAMLIT ARAYÜZÜ ---
 st.set_page_config(page_title="Asir Tools Pro", layout="wide")
 
-# SOL MENÜ (NAVİGASYON)
+# Sidebar Menü
 with st.sidebar:
-    st.title("🛠️ Asir Tools")
+    st.title("🛠️ Asir Tools Pro")
     page = st.radio("Bir araç seçin:", ["Excel Dönüştürücü", "PO Tracking Çıkarıcı"])
     st.divider()
-    if st.button("🏠 Ana Sayfa / Sıfırla", use_container_width=True):
+    if st.button("🏠 Ana Sayfa", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
 
@@ -116,17 +119,17 @@ if page == "Excel Dönüştürücü":
     uploaded_file = st.file_uploader("Excel dosyasını yükleyin", type=["xlsx", "xls"])
     if uploaded_file:
         try:
-            input_filename = uploaded_file.name
-            file_base, file_ext = os.path.splitext(input_filename)
+            file_base, file_ext = os.path.splitext(uploaded_file.name)
             output_filename = f"{file_base}_islenmis{file_ext}"
             df = pd.read_excel(uploaded_file, dtype=str).fillna('')
             processed_data = []
             
             f_headers = [f'Feature {i+1}' for i in range(feature_count)]
+            u_s, u_w = f"({size_unit})", f"({weight_unit})"
             output_headers = ['CODE', 'EAN CODE', 'COLOR', 'DESCRIPTION'] + f_headers + \
-                             ['IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', f'WEIGHT ({weight_unit})',
-                              f'PRODUCT SIZE - X ({size_unit})', f'PRODUCT SIZE - Y ({size_unit})', f'PRODUCT SIZE - Z ({size_unit})',
-                              f'CARTON WEIGHT ({weight_unit})', f'PACKAGING SIZE - X ({size_unit})', f'PACKAGING SIZE - Y ({size_unit})', f'PACKAGING SIZE - Z ({size_unit})']
+                             ['IMAGE', 'PRICE', ' ', 'RETAIL PRICE', 'NUMBER OF PACKAGES', f'WEIGHT {u_w}',
+                              f'PRODUCT SIZE - X {u_s}', f'PRODUCT SIZE - Y {u_s}', f'PRODUCT SIZE - Z {u_s}',
+                              f'CARTON WEIGHT {u_w}', f'PACKAGING SIZE - X {u_s}', f'PACKAGING SIZE - Y {u_s}', f'PACKAGING SIZE - Z {u_s}']
 
             for index, row in df.iterrows():
                 code = str(row.get('CODE', '')).strip()
@@ -166,37 +169,33 @@ if page == "Excel Dönüştürücü":
                 for c_idx, c_name in enumerate(output_headers, 1):
                     letter = ws.cell(row=1, column=c_idx).column_letter
                     if "Feature" in str(c_name): ws.column_dimensions[letter].width = 15
+                    elif any(w in str(c_name) for w in ["PRICE", "SIZE", "WEIGHT", "PACKAGES"]):
+                        m_data = max([len(str(ws.cell(row=r, column=c_idx).value)) for r in range(2, len(out_df)+2)] + [0])
+                        ws.column_dimensions[letter].width = m_data + 5
                     else:
-                        m_len = max([len(str(ws.cell(row=r, column=c_idx).value)) for r in range(1, len(out_df)+2)] + [0])
-                        ws.column_dimensions[letter].width = min(m_len + 2, 40)
+                        m_all = max([len(str(ws.cell(row=r, column=c_idx).value)) for r in range(1, len(out_df)+2)] + [0])
+                        ws.column_dimensions[letter].width = min(m_all + 2, 40)
                     for r_idx in range(1, len(out_df) + 2):
                         cell = ws.cell(row=r_idx, column=c_idx)
                         cell.alignment = al_left if (r_idx > 1 and "Feature" in str(c_name)) else al_center
                         if r_idx > 1: ws.row_dimensions[r_idx].height = 15
                 ws.row_dimensions[1].height = 45
-
-            st.download_button("📥 İşlenmiş Excel'i İndir", output.getvalue(), output_filename, use_container_width=True)
+            st.download_button("📥 Excel'i İndir", output.getvalue(), output_filename, use_container_width=True)
         except Exception as e: st.error(f"Hata: {e}")
 
-# --- SAYFA 2: PO TRACKING ---
+# --- SAYFA 2: PO TRACKING (DÜZELTİLMİŞ) ---
 elif page == "PO Tracking Çıkarıcı":
     st.header("📄 PDF'den PO ve Tracking Numarası Çıkarıcı")
-    st.write("Bilgisayarındaki PDF dosyalarını buraya yükle, PO ve Tracking numaralarını Excel olarak al.")
-    
-    pdf_files = st.file_uploader("PDF dosyalarını seçin (Çoklu seçim yapabilirsiniz)", type="pdf", accept_multiple_files=True)
-    
+    pdf_files = st.file_uploader("PDF dosyalarını seçin", type="pdf", accept_multiple_files=True)
     if pdf_files:
         if st.button("🚀 Dosyaları İşle", use_container_width=True):
-            with st.spinner("PDF'ler taranıyor..."):
-                results_df = process_pdfs(pdf_files)
+            with st.spinner("PDF'ler hatasız şekilde ayrıştırılıyor..."):
+                results_df = process_pdfs_perfect(pdf_files)
                 if not results_df.empty:
-                    st.success(f"✅ {len(results_df)} adet veri çıkarıldı!")
+                    st.success(f"✅ {len(results_df)} PO başarıyla eşleşti.")
                     st.dataframe(results_df)
-                    
                     output = io.BytesIO()
                     with pd.ExcelWriter(output, engine='openpyxl') as writer:
                         results_df.to_excel(writer, index=False)
-                    
-                    st.download_button("📥 Sonuçları Excel Olarak İndir", output.getvalue(), "PO_Tracking_Listesi.xlsx", use_container_width=True)
-                else:
-                    st.warning("Hiç PO veya Tracking numarası bulunamadı.")
+                    st.download_button("📥 Sonuçları Excel Olarak İndir", output.getvalue(), "PO_Tracking_Final.xlsx", use_container_width=True)
+                else: st.warning("Eşleşen veri bulunamadı.")
