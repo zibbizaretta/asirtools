@@ -101,7 +101,7 @@ st.set_page_config(page_title="Asir Tools Pro", layout="wide")
 with st.sidebar:
     st.title("🛠️ Asir Tools Pro")
     # İsimlendirmeler İngilizce olarak güncellendi
-    page = st.radio("Select Tool:", ["Excel Transformer", "PO Tracking Extractor"])
+    page = st.radio("Select Tool:", ["WF Template Tool", "PO Tracking Tool"])
     st.divider()
     if st.button("🏠 Home / Reset", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
@@ -201,3 +201,4 @@ elif page == "PO Tracking Extractor":
                         results_df.to_excel(writer, index=False)
                     st.download_button(f"📥 Download {date_filename}", output.getvalue(), date_filename, use_container_width=True)
                 else: st.warning("No valid tracking numbers found.")
+
