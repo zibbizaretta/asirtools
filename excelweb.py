@@ -13,7 +13,7 @@ KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
 
-# --- HELPER FUNCTIONS (WF TEMPLATE TOOL) ---
+# --- HELPER FUNCTIONS (GENERAL & WF TEMPLATE TOOL) ---
 def extract_dimensions_from_string(text_to_search):
     def find_dimension_value(pattern, text):
         match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
@@ -64,27 +64,37 @@ def convert_weight_value(val_kg, weight_unit_choice):
         return round(num_val, 2), round(num_val, 2)
     except: return val_kg, val_kg
 
-# --- HELPER FUNCTIONS (PO TRACKING TOOL) ---
-def process_pdfs_advanced(pdf_files):
+# --- HELPER FUNCTIONS (PO TRACKING TOOL - ROBUST VERSION) ---
+def process_pdfs_robust(pdf_files):
     all_data = {}
     po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
-    trk_pattern = re.compile(r"(?<![a-zA-Z0-9])(\d{12})(?![a-zA-Z0-9])")
+    # Gelişmiş Tracking Regex: 00 ile başlayan 18-20 hane veya 12-15 haneli numaraları yakalar
+    # Barkodlardan kaçınmak için etrafında harf/rakam olmayan izole sayıları arar
+    trk_pattern = re.compile(r"(?<![a-zA-Z0-9])(\d{12,20})(?![a-zA-Z0-9])")
+    
     for pdf_file in pdf_files:
         try:
             reader = pypdf.PdfReader(pdf_file)
             for page in reader.pages:
                 text = page.extract_text()
-                if text:
-                    chunks = po_pattern.split(text)
-                    for j in range(1, len(chunks), 2):
-                        po_number = chunks[j].strip()
-                        content_after_po = chunks[j+1]
-                        found_trks = trk_pattern.findall(content_after_po)
-                        if found_trks:
-                            if po_number not in all_data: all_data[po_number] = set()
-                            for t in found_trks: all_data[po_number].add(t)
+                if not text: continue
+                
+                # --- ÇİFT KATMANLI TARAMA MANTIĞI ---
+                chunks = po_pattern.split(text)
+                for j in range(1, len(chunks), 2):
+                    po_number = chunks[j].strip()
+                    content_after_po = chunks[j+1]
+                    
+                    found_trks = trk_pattern.findall(content_after_po)
+                    if found_trks:
+                        if po_number not in all_data: all_data[po_number] = set()
+                        for t in found_trks:
+                            # 26 ile başlayan dikey statik kodları eliyoruz
+                            if not t.startswith("26"):
+                                all_data[po_number].add(t)
         except Exception as e:
             st.error(f"Error: {pdf_file.name} - {e}")
+    
     final_rows = []
     for po in sorted(all_data.keys()):
         trks = sorted(list(all_data[po]))
@@ -135,14 +145,17 @@ if page == "WF Template Tool":
                 extra = str(row.get('EXTRA FEATURES', ''))
                 if "number of packages" not in extra.lower(): feat_list.extend(clean_feature_list(extra))
                 if add_made_in_tr and not any(MADE_IN_TURKEY in str(f) for f in feat_list): feat_list.append(MADE_IN_TURKEY)
+                
                 f_cols = [""] * feature_count
                 if feature_count > 1:
                     for i in range(min(len(feat_list), feature_count - 1)): f_cols[i] = feat_list[i]
                     if len(feat_list) >= feature_count: f_cols[feature_count-1] = "\n".join(feat_list[feature_count-1:])
                 elif feat_list: f_cols[0] = "\n".join(feat_list)
+
                 dims = extract_dimensions_from_string(str(row.get('FEATURES', '')) + "\n" + extra)
                 px, py, pz = dims if dims else ('', '', '')
                 c_w, p_w = convert_weight_value(row.get('WEIGHT (Kg)', ''), weight_unit)
+
                 processed_data.append([code, row.get('EAN CODE', ''), str(row.get('COLOR', '')).replace('\n', ';'), row.get('DESCRIPTION', '')] + f_cols + \
                                       [row.get('IMAGE', ''), row.get('PRICE', ''), '', row.get('RETAIL PRICE', ''), row.get('NUMBER OF PACKAGES', ''),
                                        p_w, convert_size_value(px, size_unit), convert_size_value(py, size_unit), convert_size_value(pz, size_unit),
@@ -181,8 +194,8 @@ elif page == "PO Tracking Tool":
     pdf_files = st.file_uploader("Upload PDF files", type="pdf", accept_multiple_files=True)
     if pdf_files:
         if st.button("Extract Data", use_container_width=True):
-            with st.spinner("Processing..."):
-                results_df = process_pdfs_advanced(pdf_files)
+            with st.spinner("Analyzing PDF layers..."):
+                results_df = process_pdfs_robust(pdf_files)
                 if not results_df.empty:
                     st.dataframe(results_df)
                     current_date = datetime.now().strftime("%d-%m-%Y")
