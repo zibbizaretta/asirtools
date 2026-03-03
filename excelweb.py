@@ -13,6 +13,21 @@ KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
 
+# --- CONSTANTS (TITLE GENERATOR TOOL) ---
+COLORS = [
+    "Black", "White", "Gold", "Silver", "Anthracite", "Walnut", "Oak", "Beige", 
+    "Ecru", "Turquoise", "Pink", "Red", "Blue", "Green", "Yellow", "Orange", 
+    "Purple", "Grey", "Gray", "Brown", "Copper", "Bronze", "Chrome", "Mustard", 
+    "Fuchsia", "Mink", "Salmon", "Claret Red", "Navy Blue", "Mint"
+]
+
+MATERIALS = [
+    "MDF", "Metal", "Steel", "Tempered Glass", "Glass", "Velvet", "Cotton", 
+    "Spruce Wood", "Pine Wood", "Beech Wood", "Solid Wood", "Wood", "Plastic", 
+    "Ceramic", "Polyester", "Acrylic", "Jute", "Coir", "PVC", "Bamboo", "Leather", 
+    "Linen", "Porcelain", "Iron"
+]
+
 # --- HELPER FUNCTIONS (GENERAL & WF TEMPLATE TOOL) ---
 def extract_dimensions_from_string(text_to_search):
     def find_dimension_value(pattern, text):
@@ -64,12 +79,11 @@ def convert_weight_value(val_kg, weight_unit_choice):
         return round(num_val, 2), round(num_val, 2)
     except: return val_kg, val_kg
 
-# --- HELPER FUNCTIONS (PO TRACKING TOOL - ROBUST VERSION) ---
+
+# --- HELPER FUNCTIONS (PO TRACKING TOOL) ---
 def process_pdfs_robust(pdf_files):
     all_data = {}
     po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
-    # Gelişmiş Tracking Regex: 00 ile başlayan 18-20 hane veya 12-15 haneli numaraları yakalar
-    # Barkodlardan kaçınmak için etrafında harf/rakam olmayan izole sayıları arar
     trk_pattern = re.compile(r"(?<![a-zA-Z0-9])(\d{12,20})(?![a-zA-Z0-9])")
     
     for pdf_file in pdf_files:
@@ -79,7 +93,6 @@ def process_pdfs_robust(pdf_files):
                 text = page.extract_text()
                 if not text: continue
                 
-                # --- ÇİFT KATMANLI TARAMA MANTIĞI ---
                 chunks = po_pattern.split(text)
                 for j in range(1, len(chunks), 2):
                     po_number = chunks[j].strip()
@@ -89,7 +102,6 @@ def process_pdfs_robust(pdf_files):
                     if found_trks:
                         if po_number not in all_data: all_data[po_number] = set()
                         for t in found_trks:
-                            # 26 ile başlayan dikey statik kodları eliyoruz
                             if not t.startswith("26"):
                                 all_data[po_number].add(t)
         except Exception as e:
@@ -102,16 +114,121 @@ def process_pdfs_robust(pdf_files):
             final_rows.append({"PO": po, "TRK": ", ".join(trks)})
     return pd.DataFrame(final_rows)
 
+
+# --- HELPER FUNCTIONS (TITLE GENERATOR TOOL) ---
+def clean_title_text(text):
+    """Gereksiz kısımları metinden atar."""
+    if not isinstance(text, str): return ""
+    
+    ignore_keywords = [
+        r"number of packages", r"paket sayısı", r"packaging size", 
+        r"weight", r"ean code", r"price", r"retail price"
+    ]
+    
+    for keyword in ignore_keywords:
+        match = re.search(keyword, text, flags=re.IGNORECASE)
+        if match:
+            text = text[:match.start()]
+            
+    return text.strip()
+
+def extract_color(text):
+    found_colors = []
+    for color in COLORS:
+        if re.search(rf"\b{color}\b", text, re.IGNORECASE):
+            if color not in found_colors:
+                found_colors.append(color)
+    return " & ".join(found_colors[:2])
+
+def extract_material(text):
+    found_materials = []
+    percent_match = re.search(r"100%\s*([a-zA-Z\s]+?)(?:,|\||Fabric|Construction|Frame)", text, re.IGNORECASE)
+    if percent_match:
+        mat = percent_match.group(1).strip()
+        if len(mat.split()) <= 3:
+            return mat.title()
+
+    for mat in MATERIALS:
+        if re.search(rf"\b{mat}\b", text, re.IGNORECASE):
+            if mat not in found_materials:
+                found_materials.append(mat)
+    return " & ".join(found_materials[:2])
+
+def extract_and_convert_title_dimensions(text, target_unit):
+    text = text.replace(',', '.')
+    
+    pattern_abc = r'(\d+(?:\.\d+)?)\s*(?:x|X|\*)\s*(\d+(?:\.\d+)?)(?:\s*(?:x|X|\*)\s*(\d+(?:\.\d+)?))?\s*(cm|in|inch|inches|mm)?'
+    match = re.search(pattern_abc, text, re.IGNORECASE)
+    
+    pattern_whd = r'(?:W|Width|Genişlik)\s*:?\s*(\d+(?:\.\d+)?).*?(?:H|Height|Yükseklik)\s*:?\s*(\d+(?:\.\d+)?)'
+    match_whd = re.search(pattern_whd, text, re.IGNORECASE)
+
+    val1, val2, val3, current_unit = None, None, None, "cm"
+
+    if match:
+        val1, val2 = float(match.group(1)), float(match.group(2))
+        val3 = float(match.group(3)) if match.group(3) else None
+        if match.group(4):
+            current_unit = match.group(4).lower()
+    elif match_whd:
+        val1, val2 = float(match_whd.group(1)), float(match_whd.group(2))
+        if "inch" in text.lower() or "in" in text.lower().split():
+            current_unit = "inch"
+
+    if val1 is None: return ""
+
+    def convert(v, c_unit, t_unit):
+        if "in" in c_unit and t_unit == "cm": return v * 2.54
+        if "cm" in c_unit and t_unit == "inch": return v / 2.54
+        if "mm" in c_unit and t_unit == "inch": return v / 25.4
+        if "mm" in c_unit and t_unit == "cm": return v / 10
+        return v
+
+    nv1 = round(convert(val1, current_unit, target_unit), 1)
+    nv2 = round(convert(val2, current_unit, target_unit), 1)
+    nv3 = round(convert(val3, current_unit, target_unit), 1) if val3 else None
+
+    unit_str = "inches" if target_unit == "inch" else "cm"
+    
+    if nv3: return f"{nv1} x {nv2} x {nv3} {unit_str}"
+    else: return f"{nv1} x {nv2} {unit_str}"
+
+def generate_title(row, name_col, features_col, target_unit, marketing_col=None):
+    raw_name = str(row[name_col]) if pd.notna(row[name_col]) else ""
+    raw_features = str(row[features_col]) if features_col and pd.notna(row[features_col]) else ""
+    
+    full_text = clean_title_text(raw_name + " | " + raw_features)
+    
+    base_name = ""
+    if marketing_col and marketing_col in row and pd.notna(row[marketing_col]):
+        base_name = str(row[marketing_col]).strip()
+    else:
+        base_name = re.split(r',|\|', raw_name)[0].strip()
+
+    color = extract_color(full_text)
+    material = extract_material(full_text)
+    dimensions = extract_and_convert_title_dimensions(full_text, target_unit)
+
+    title_parts = [base_name]
+    if color: title_parts.append(color)
+    if material: title_parts.append(material)
+    if dimensions: title_parts.append(dimensions)
+
+    return " - ".join(title_parts)
+
+
 # --- APP INTERFACE ---
 st.set_page_config(page_title="Asir Tools", layout="wide")
 
 with st.sidebar:
     st.title("Asir Tools")
-    page = st.radio("Select Tool:", ["WF Template Tool", "PO Tracking Tool"])
+    # YENİ TOOL BURAYA EKLENDİ
+    page = st.radio("Select Tool:", ["WF Template Tool", "PO Tracking Tool", "Title Generator Tool"])
     st.divider()
     if st.button("Home / Reset", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
+
 
 # --- PAGE 1: WF TEMPLATE TOOL ---
 if page == "WF Template Tool":
@@ -188,6 +305,7 @@ if page == "WF Template Tool":
             st.download_button("Download Processed Excel", output.getvalue(), output_filename, use_container_width=True)
         except Exception as e: st.error(f"Error: {e}")
 
+
 # --- PAGE 2: PO TRACKING TOOL ---
 elif page == "PO Tracking Tool":
     st.header("PO Tracking Tool")
@@ -205,3 +323,63 @@ elif page == "PO Tracking Tool":
                         results_df.to_excel(writer, index=False)
                     st.download_button(f"Download {date_filename}", output.getvalue(), date_filename, use_container_width=True)
                 else: st.warning("No valid tracking numbers found.")
+
+
+# --- PAGE 3: TITLE GENERATOR TOOL ---
+elif page == "Title Generator Tool":
+    st.header("📝 Ürün İsmi Oluşturucu (Title Generator)")
+    st.markdown("Yüklediğiniz dosyadan, paket ölçüleri gibi gereksiz verileri ayıklayarak **Ana Ürün, Renk, Materyal ve Ölçü** bileşenlerinden oluşan temiz bir ürün ismi oluşturur.")
+    
+    with st.sidebar:
+        st.subheader("Title Generator Settings")
+        target_unit = st.radio("Oluşturulacak İsimdeki Ölçü Birimi:", ("inch", "cm"), index=0, horizontal=True)
+
+    uploaded_file = st.file_uploader("Lütfen Veri Dosyanızı Yükleyin (Excel veya CSV)", type=["xlsx", "xls", "csv"])
+
+    if uploaded_file is not None:
+        try:
+            if uploaded_file.name.endswith('.csv'):
+                df = pd.read_csv(uploaded_file)
+            else:
+                df = pd.read_excel(uploaded_file)
+                
+            st.success("Dosya başarıyla yüklendi!")
+            
+            columns = df.columns.tolist()
+            
+            st.subheader("Sütun Eşleştirmeleri")
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                name_col = st.selectbox("Ana Ürün Adı / NAME Sütunu", options=columns)
+            with col2:
+                features_col = st.selectbox("Ek Özellikler / FEATURES Sütunu (Opsiyonel)", options=["Yok"] + columns)
+            with col3:
+                marketing_col = st.selectbox("Marketing Copy Sütunu (Opsiyonel)", options=["Yok"] + columns)
+
+            if st.button("🚀 Ürün İsimlerini Oluştur", use_container_width=True):
+                with st.spinner("Regex kuralları işleniyor ve isimler oluşturuluyor..."):
+                    
+                    f_col = features_col if features_col != "Yok" else None
+                    m_col = marketing_col if marketing_col != "Yok" else None
+                    
+                    df['Generated_Title'] = df.apply(lambda row: generate_title(row, name_col, f_col, target_unit, m_col), axis=1)
+                    
+                    st.success("İşlem Tamamlandı! Aşağıdan önizlemeye bakabilirsiniz.")
+                    
+                    st.dataframe(df[[name_col, 'Generated_Title']].head(20))
+                    
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        df.to_excel(writer, index=False, sheet_name='Sheet1')
+                    
+                    st.download_button(
+                        label="📥 Yeni Excel Dosyasını İndir",
+                        data=output.getvalue(),
+                        file_name="Temiz_Urun_Isimleri.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+
+        except Exception as e:
+            st.error(f"Bir hata oluştu: {e}")
