@@ -532,7 +532,7 @@ def process_wayfair_v9(data_file, template_file, ui_data, image_file=None, carto
 # --- 4. STREAMLIT ARAYÜZÜ (V9) ---
 
 st.set_page_config(page_title="Wayfair Automation V9", layout="wide")
-st.title("🛡️ Wayfair Akıllı Ürün Robotu V9")
+st.title("🛡️ Wayfair Automation V9")
 
 # --- SOL MENÜ ---
 with st.sidebar:
