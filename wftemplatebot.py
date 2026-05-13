@@ -133,6 +133,16 @@ def process_wayfair_v9(data_file, template_file, ui_data, image_file=None, carto
 
     df_data = pd.read_excel(data_file)
     
+    # --- HAYALET VE ÖZET SATIR KORUMASI ---
+    # "CODE" hücresi boş olan (örneğin en alttaki toplam/özet satırları) satırları temizle
+    if 'CODE' in df_data.columns:
+        df_data = df_data.dropna(subset=['CODE'])
+        df_data = df_data[df_data['CODE'].astype(str).str.strip() != '']
+    else:
+        df_data = df_data.dropna(how='all')
+        
+    df_data = df_data.reset_index(drop=True)
+    
     # --- PAKET (CARTON) EXCEL'İNİ İŞLEME ---
     carton_dict = {}
     if carton_file is not None:
@@ -257,7 +267,12 @@ def process_wayfair_v9(data_file, template_file, ui_data, image_file=None, carto
             progress_callback((index + 1) / total_rows)
 
         sku_key = str(row.get('CODE', '')).strip()
-        pkg_count = row.get('NUMBER OF PACKAGES', 1)
+        
+        # NaN ve hatalı girişleri engellemek için güvenli Paket Sayısı okuma
+        try:
+            pkg_count = int(float(row.get('NUMBER OF PACKAGES', 1)))
+        except:
+            pkg_count = 1
 
         # Temel boyutları al (Varsayılan olarak data excel'den)
         kg = float(row.get('WEIGHT (Kg)', 0) or 0)
@@ -548,8 +563,25 @@ if d_file:
     with st.expander("📊 Veri Önizleme (İlk 5 Satır)", expanded=False):
         d_file.seek(0)
         df_preview = pd.read_excel(d_file)
+        
+        # Önizlemede de hayalet ve özet satırları temizle
+        if 'CODE' in df_preview.columns:
+            df_preview = df_preview.dropna(subset=['CODE'])
+            df_preview = df_preview[df_preview['CODE'].astype(str).str.strip() != '']
+        else:
+            df_preview = df_preview.dropna(how='all')
+            
+        df_preview = df_preview.reset_index(drop=True)
+        
         st.dataframe(df_preview.head(5), width='stretch')
-        multi_pkg = df_preview[df_preview.get('NUMBER OF PACKAGES', pd.Series(dtype=int)) != 1] if 'NUMBER OF PACKAGES' in df_preview.columns else pd.DataFrame()
+        
+        # Güvenli çoklu paket sayımı (Sadece 1'den büyük olanları say)
+        if 'NUMBER OF PACKAGES' in df_preview.columns:
+            pkg_series = pd.to_numeric(df_preview['NUMBER OF PACKAGES'], errors='coerce').fillna(1)
+            multi_pkg = df_preview[pkg_series > 1]
+        else:
+            multi_pkg = pd.DataFrame()
+            
         col1, col2, col3 = st.columns(3)
         col1.metric("Toplam Ürün", len(df_preview))
         col2.metric("Toplam Sütun", len(df_preview.columns))
