@@ -260,7 +260,7 @@ def generate_bedding_note(text, h_val, w_val, bed_size, is_us):
 
 # --- 3. ANA İŞLEME MOTORU (WAYFAIR ŞABLONU İÇİN) ---
 
-def process_wayfair_v16(data_file, template_file, ui_data, carton_file=None, progress_callback=None):
+def process_wayfair_v18(data_file, template_file, ui_data, carton_file=None, progress_callback=None):
     data_file.seek(0)
     template_file.seek(0)
     
@@ -639,6 +639,12 @@ def process_data_excel_only(data_file, is_us):
     wb = openpyxl.load_workbook(data_file)
     ws = wb.active
 
+    # --- YENİ EKLENEN: HÜCRE ÜZERİNE YAPIŞTIRILMIŞ FİZİKSEL RESİMLERİ SİLME ---
+    # Eğer orijinal excelde hücrelerin üzerine fiziksel olarak kopyala/yapıştır 
+    # yapılmış resim objeleri (floating images) varsa bunları kökünden temizliyoruz.
+    if hasattr(ws, '_images'):
+        ws._images = []
+
     def get_headers():
         h = {}
         for c in range(1, ws.max_column + 1):
@@ -855,10 +861,10 @@ def process_data_excel_only(data_file, is_us):
     return output.getvalue()
 
 
-# --- 4. STREAMLIT ARAYÜZÜ (V16) ---
+# --- 4. STREAMLIT ARAYÜZÜ (V18) ---
 
-st.set_page_config(page_title="Wayfair & Data Akıllı Ürün Robotu V16", layout="wide")
-st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V16")
+st.set_page_config(page_title="Wayfair & Data Akıllı Ürün Robotu V18", layout="wide")
+st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V18")
 
 # --- SOL MENÜ ---
 with st.sidebar:
@@ -1052,7 +1058,7 @@ with tab_wayfair:
                 t_io = io.BytesIO(t_file.getvalue())
                 c_io = io.BytesIO(c_file.getvalue()) if c_file else None
                 
-                res, processed, skipped, errors = process_wayfair_v16(
+                res, processed, skipped, errors = process_wayfair_v18(
                     d_io, t_io, ui_data, carton_file=c_io, progress_callback=update_progress
                 )
 
