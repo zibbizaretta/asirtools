@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Alignment
 import re
 import io
 import copy
@@ -665,15 +666,13 @@ def process_data_excel_only(data_file, is_us):
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=ean_col)
             if cell.value is not None:
-                if isinstance(cell.value, (int, float)):
-                    cell.value = "{:.0f}".format(cell.value)
-                else:
-                    try:
-                        # Eğer hücreye metin olarak 8.68E+12 girilmişse de yakala
-                        cell.value = "{:.0f}".format(float(cell.value))
-                    except:
-                        cell.value = str(cell.value).strip()
-                cell.number_format = '@'  # Excel'i bu hücrenin salt metin (text) olduğuna zorlar
+                try:
+                    # Sayısal değere tam sayı olarak zorla (E+12'den kurtar)
+                    cell.value = int(float(str(cell.value).strip()))
+                    cell.number_format = '0'
+                except:
+                    cell.value = str(cell.value).strip()
+                    cell.number_format = '@'
 
     # 3. COLOR Sütununu Temizleme
     color_col = headers.get('COLOR')
@@ -837,6 +836,19 @@ def process_data_excel_only(data_file, is_us):
                 if c_data['fill']: new_cell.fill = c_data['fill']
                 if c_data['alignment']: new_cell.alignment = c_data['alignment']
                 if c_data['number_format']: new_cell.number_format = c_data['number_format']
+
+    # --- YENİ EKLENEN: Metni Kaydır'ı İptal Et ve Satır Boyunu Sabitle ---
+    for row in ws.iter_rows():
+        for cell in row:
+            if cell.alignment:
+                new_alignment = copy.copy(cell.alignment)
+                new_alignment.wrap_text = False
+                cell.alignment = new_alignment
+            else:
+                cell.alignment = Alignment(wrap_text=False)
+        
+        # Her satırın yüksekliğini standart 15 olarak sabitleyip "tek satır" görünmesini sağla
+        ws.row_dimensions[row[0].row].height = 15
 
     output = io.BytesIO()
     wb.save(output)
