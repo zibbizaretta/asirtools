@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Alignment
+from openpyxl.styles import Alignment, Border, Side
 import re
 import io
 import copy
@@ -260,7 +260,7 @@ def generate_bedding_note(text, h_val, w_val, bed_size, is_us):
 
 # --- 3. ANA İŞLEME MOTORU (WAYFAIR ŞABLONU İÇİN) ---
 
-def process_wayfair_v18(data_file, template_file, ui_data, carton_file=None, progress_callback=None):
+def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, progress_callback=None):
     data_file.seek(0)
     template_file.seek(0)
     
@@ -633,15 +633,14 @@ def process_wayfair_v18(data_file, template_file, ui_data, carton_file=None, pro
 def process_data_excel_only(data_file, is_us):
     """
     Pandas yerine tamamen openpyxl kullanarak Data Excel'ini işler.
-    Bu sayede dosyanın orijinal satır renkleri, yazı tipleri, kenarlıkları ve yapısı zerre bozulmaz.
+    Orijinal satır renkleri, yazı tipleri, kenarlıkları ve yapısı zerre bozulmaz.
     """
     data_file.seek(0)
     wb = openpyxl.load_workbook(data_file)
     ws = wb.active
 
     # --- YENİ EKLENEN: HÜCRE ÜZERİNE YAPIŞTIRILMIŞ FİZİKSEL RESİMLERİ SİLME ---
-    # Eğer orijinal excelde hücrelerin üzerine fiziksel olarak kopyala/yapıştır 
-    # yapılmış resim objeleri (floating images) varsa bunları kökünden temizliyoruz.
+    # Hücrelerin üzerine yapıştırılmış olan yüzen resimleri kökünden temizliyoruz.
     if hasattr(ws, '_images'):
         ws._images = []
 
@@ -658,13 +657,12 @@ def process_data_excel_only(data_file, is_us):
     # 1. Hayalet / Özet Satırları Temizleme (CODE sütunu boş olanlar)
     code_col = headers.get('CODE')
     if code_col:
-        # Satır silme işlemlerinde kayma olmaması için aşağıdan yukarıya doğru siliyoruz
         for row in range(ws.max_row, 1, -1):
             val = ws.cell(row=row, column=code_col).value
             if val is None or str(val).strip() == '':
                 ws.delete_rows(row, 1)
                 
-    headers = get_headers() # Değişiklikler sonrası güncelleyelim
+    headers = get_headers()
 
     # 2. EAN CODE (Bilimsel E+12 Gösterimini Düzelterek Düz Metne Çevirme)
     ean_col = headers.get('EAN CODE')
@@ -673,7 +671,6 @@ def process_data_excel_only(data_file, is_us):
             cell = ws.cell(row=row, column=ean_col)
             if cell.value is not None:
                 try:
-                    # Sayısal değere tam sayı olarak zorla (E+12'den kurtar)
                     cell.value = int(float(str(cell.value).strip()))
                     cell.number_format = '0'
                 except:
@@ -703,13 +700,11 @@ def process_data_excel_only(data_file, is_us):
     # 5. FEATURES (Çeviri ve 5 Sütuna Bölme İşlemi)
     feat_col = headers.get('FEATURES')
     if feat_col:
-        # Features'dan hemen sonra 5 yeni sütun açıyoruz
         ws.insert_cols(feat_col + 1, 5)
         ref_header = ws.cell(row=1, column=feat_col)
         ref_col_letter = get_column_letter(feat_col)
         ref_width = ws.column_dimensions[ref_col_letter].width
         
-        # Yeni sütun başlıklarını ve orijinal stilini (renk, font) kopyala
         for i, f_name in enumerate(['Feature 1', 'Feature 2', 'Feature 3', 'Feature 4', 'Feature 5']):
             target_col_idx = feat_col + 1 + i
             target_col_letter = get_column_letter(target_col_idx)
@@ -724,7 +719,6 @@ def process_data_excel_only(data_file, is_us):
                 nc.fill = copy.copy(ref_header.fill)
                 nc.alignment = copy.copy(ref_header.alignment)
 
-        # Özellikleri satır satır çevirip parçala
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=feat_col)
             if cell.value:
@@ -737,55 +731,53 @@ def process_data_excel_only(data_file, is_us):
                 ws.cell(row=row, column=feat_col + 4).value = lines[3] if len(lines) > 3 else ""
                 ws.cell(row=row, column=feat_col + 5).value = " | ".join(lines[4:]) if len(lines) > 4 else ""
 
-    # 6. Paket Ölçülerini ve Ağırlıklarını INCH / LBS'ye Dönüştürüp Araya Sütun Ekleme
+    # 6. Ölçüleri Blok Halinde (Kg/cm ve Lbs/inch) Gruplayarak Araya Sütun Ekleme
     if is_us:
         headers = get_headers()
+        w_col = headers.get('WEIGHT (Kg)')
+        x_col = headers.get('PACKAGING SIZE - X (cm)')
+        y_col = headers.get('PACKAGING SIZE - Y (cm)')
+        z_col = headers.get('PACKAGING SIZE - Z (cm)')
         
-        # Ağırlık (Weight LBS)
-        weight_col = headers.get('WEIGHT (Kg)')
-        if weight_col:
-            ws.insert_cols(weight_col + 1, 1)
-            ref_h = ws.cell(row=1, column=weight_col)
-            nh = ws.cell(row=1, column=weight_col + 1)
-            nh.value = 'WEIGHT (Lbs)'
+        metric_cols = [c for c in [w_col, x_col, y_col, z_col] if c is not None]
+        if metric_cols:
+            # Orijinal metrik değerlerin bittiği yerin tam sağına "Amerikan Bloğu" açıyoruz.
+            insert_idx = max(metric_cols) + 1
+            ws.insert_cols(insert_idx, 4)
             
-            if ref_h.has_style:
-                nh.font = copy.copy(ref_h.font)
-                nh.border = copy.copy(ref_h.border)
-                nh.fill = copy.copy(ref_h.fill)
-                nh.alignment = copy.copy(ref_h.alignment)
-                
-            for row in range(2, ws.max_row + 1):
-                val = ws.cell(row=row, column=weight_col).value
-                try: 
-                    ws.cell(row=row, column=weight_col + 1).value = round(float(val) * 2.20462, 2)
-                except: 
-                    pass
-
-        # Boyutlar (X, Y, Z inç dönüştürücü)
-        for axis in ['X', 'Y', 'Z']:
-            headers = get_headers()
-            cm_col = headers.get(f'PACKAGING SIZE - {axis} (cm)')
-            if cm_col:
-                ws.insert_cols(cm_col + 1, 1)
-                ref_h = ws.cell(row=1, column=cm_col)
-                nh = ws.cell(row=1, column=cm_col + 1)
-                nh.value = f'PACKAGING SIZE - {axis} (in)'
-                
+            ws.cell(row=1, column=insert_idx).value = 'WEIGHT (Lbs)'
+            ws.cell(row=1, column=insert_idx + 1).value = 'PACKAGING SIZE - X (in)'
+            ws.cell(row=1, column=insert_idx + 2).value = 'PACKAGING SIZE - Y (in)'
+            ws.cell(row=1, column=insert_idx + 3).value = 'PACKAGING SIZE - Z (in)'
+            
+            ref_h = ws.cell(row=1, column=metric_cols[0])
+            for i in range(4):
+                nh = ws.cell(row=1, column=insert_idx + i)
                 if ref_h.has_style:
                     nh.font = copy.copy(ref_h.font)
                     nh.border = copy.copy(ref_h.border)
                     nh.fill = copy.copy(ref_h.fill)
                     nh.alignment = copy.copy(ref_h.alignment)
                     
-                for row in range(2, ws.max_row + 1):
-                    val = ws.cell(row=row, column=cm_col).value
-                    try: 
-                        ws.cell(row=row, column=cm_col + 1).value = round(float(val) * 0.393701, 2)
-                    except: 
-                        pass
+            for row in range(2, ws.max_row + 1):
+                if w_col:
+                    val = ws.cell(row=row, column=w_col).value
+                    try: ws.cell(row=row, column=insert_idx).value = round(float(val) * 2.20462, 2)
+                    except: pass
+                if x_col:
+                    val = ws.cell(row=row, column=x_col).value
+                    try: ws.cell(row=row, column=insert_idx + 1).value = round(float(val) * 0.393701, 2)
+                    except: pass
+                if y_col:
+                    val = ws.cell(row=row, column=y_col).value
+                    try: ws.cell(row=row, column=insert_idx + 2).value = round(float(val) * 0.393701, 2)
+                    except: pass
+                if z_col:
+                    val = ws.cell(row=row, column=z_col).value
+                    try: ws.cell(row=row, column=insert_idx + 3).value = round(float(val) * 0.393701, 2)
+                    except: pass
 
-    # 7. Resim, URL ve Link Barındıran Sütunları Tablonun EN SAĞINA (Sonuna) Taşıma
+    # 7. Resim, URL ve Link Barındıran Sütunları Tablonun EN SAĞINA Taşıma
     headers = get_headers()
     img_cols = []
     
@@ -795,7 +787,6 @@ def process_data_excel_only(data_file, is_us):
             img_cols.append((col_idx, col_name))
             
     if img_cols:
-        # Sütunları tersten (sondan başa) okuyoruz ki birini silince diğerinin numarası (index) kaymasın
         img_cols.sort(key=lambda x: x[0], reverse=True)
         extracted_cols = []
         
@@ -806,8 +797,6 @@ def process_data_excel_only(data_file, is_us):
 
             for row in range(1, ws.max_row + 1):
                 cell = ws.cell(row=row, column=col_idx)
-                
-                # Resim hücrelerindeki değerleri ve mevcut tüm biçimlerini tek tek kopyalıyoruz
                 cell_data = {
                     'value': cell.value,
                     'font': copy.copy(cell.font) if cell.has_style and cell.font else None,
@@ -819,10 +808,8 @@ def process_data_excel_only(data_file, is_us):
                 col_data.append(cell_data)
             
             extracted_cols.append({'name': col_name, 'width': col_width, 'data': col_data})
-            # Sütunun kopyasını aldıktan sonra orijinal konumundan siliyoruz
             ws.delete_cols(col_idx, 1)
             
-        # Orijinal sıralamalarını bozmamak için kopyaladığımız listeyi tekrar düzeltiyoruz
         extracted_cols.reverse()
         
         for col_dict in extracted_cols:
@@ -836,35 +823,60 @@ def process_data_excel_only(data_file, is_us):
                 new_cell = ws.cell(row=row_idx, column=new_col_idx)
                 new_cell.value = c_data['value']
                 
-                # Yeni konuma (en sağa) geçerken orijinal renk ve biçimleri de geri veriyoruz
                 if c_data['font']: new_cell.font = c_data['font']
                 if c_data['border']: new_cell.border = c_data['border']
                 if c_data['fill']: new_cell.fill = c_data['fill']
                 if c_data['alignment']: new_cell.alignment = c_data['alignment']
                 if c_data['number_format']: new_cell.number_format = c_data['number_format']
 
-    # --- YENİ EKLENEN: Metni Kaydır'ı İptal Et ve Satır Boyunu Sabitle ---
-    for row in ws.iter_rows():
-        for cell in row:
-            if cell.alignment:
-                new_alignment = copy.copy(cell.alignment)
-                new_alignment.wrap_text = False
-                cell.alignment = new_alignment
-            else:
-                cell.alignment = Alignment(wrap_text=False)
+    # --- 8. YENİ EKLENEN: Sütun Genişliği (12), Kalın Kenarlıklar ve Hizalamalar ---
+    medium_border = Border(
+        left=Side(style='medium', color='000000'),
+        right=Side(style='medium', color='000000'),
+        top=Side(style='medium', color='000000'),
+        bottom=Side(style='medium', color='000000')
+    )
+    
+    headers = get_headers()
+    for col_name, col_idx in headers.items():
+        col_letter = get_column_letter(col_idx)
+        # Sütun genişliklerini standart 12 ile sınırlandırıyoruz
+        ws.column_dimensions[col_letter].width = 12
         
-        # Her satırın yüksekliğini standart 15 olarak sabitleyip "tek satır" görünmesini sağla
-        ws.row_dimensions[row[0].row].height = 15
+        name_upper = str(col_name).upper()
+        # İçeriklere göre yatay hizalama tespiti
+        if 'WEIGHT' in name_upper or 'SIZE' in name_upper or 'PACKAGE' in name_upper:
+            col_align = Alignment(horizontal='center', vertical='center', wrap_text=False)
+        elif 'FEATURE' in name_upper or 'DESCRIPTION' in name_upper or 'COLOR' in name_upper:
+            col_align = Alignment(horizontal='left', vertical='center', wrap_text=False)
+        else:
+            col_align = Alignment(horizontal='center', vertical='center', wrap_text=False)
+            
+        for row in range(1, ws.max_row + 1):
+            cell = ws.cell(row=row, column=col_idx)
+            
+            # Kenarlıkları uygula (Taşmaları bıçak gibi keser)
+            cell.border = medium_border
+            
+            # Başlık satırı (Row 1) her zaman ortalı olsun
+            if row == 1:
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+            else:
+                cell.alignment = col_align
+
+    # Satır yüksekliklerini 18 olarak sabitleyip "tek satır" görünümüne kavuştur
+    for row in range(1, ws.max_row + 1):
+        ws.row_dimensions[row].height = 18
 
     output = io.BytesIO()
     wb.save(output)
     return output.getvalue()
 
 
-# --- 4. STREAMLIT ARAYÜZÜ (V18) ---
+# --- 4. STREAMLIT ARAYÜZÜ (V19) ---
 
-st.set_page_config(page_title="Wayfair & Data Akıllı Ürün Robotu V18", layout="wide")
-st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V18")
+st.set_page_config(page_title="Wayfair & Data Akıllı Ürün Robotu V19", layout="wide")
+st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V19")
 
 # --- SOL MENÜ ---
 with st.sidebar:
@@ -1058,7 +1070,7 @@ with tab_wayfair:
                 t_io = io.BytesIO(t_file.getvalue())
                 c_io = io.BytesIO(c_file.getvalue()) if c_file else None
                 
-                res, processed, skipped, errors = process_wayfair_v18(
+                res, processed, skipped, errors = process_wayfair_v19(
                     d_io, t_io, ui_data, carton_file=c_io, progress_callback=update_progress
                 )
 
