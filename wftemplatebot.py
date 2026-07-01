@@ -278,7 +278,7 @@ def generate_bedding_note(text, h_val, w_val, bed_size, is_us):
 
 # --- 3. ANA İŞLEME MOTORU ---
 
-def process_wayfair_v12(data_file, template_file, ui_data, carton_file=None, progress_callback=None):
+def process_wayfair_v13(data_file, template_file, ui_data, carton_file=None, progress_callback=None):
     data_file.seek(0)
     template_file.seek(0)
 
@@ -611,7 +611,7 @@ def process_wayfair_v12(data_file, template_file, ui_data, carton_file=None, pro
     # EKSİK ZORUNLU ALANLARI SARIYA BOYA (Hex: FFFF00)
     yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
     for c in range(1, ws_main.max_column + 1):
-        if str(ws_main.cell(row=3, column=c).value).strip() == "Required":
+        if str(ws_main.cell(row=3, column=c).value).strip().lower() == "required":
             for r in written_rows:
                 cell = ws_main.cell(row=r, column=c)
                 if cell.value is None or str(cell.value).strip() == "":
@@ -702,10 +702,10 @@ def process_wayfair_v12(data_file, template_file, ui_data, carton_file=None, pro
     wb.save(output)
     return output.getvalue(), processed, skipped, errors
 
-# --- 4. STREAMLIT ARAYÜZÜ (V12) ---
+# --- 4. STREAMLIT ARAYÜZÜ (V13) ---
 
-st.set_page_config(page_title="Wayfair Automation V12", layout="wide")
-st.title("🛡️ Wayfair Akıllı Ürün Robotu V12")
+st.set_page_config(page_title="Wayfair Automation V13", layout="wide")
+st.title("🛡️ Wayfair Akıllı Ürün Robotu V13")
 
 # --- SOL MENÜ ---
 with st.sidebar:
@@ -729,6 +729,7 @@ with u3:
     c_file = st.file_uploader("3. Paket Excel (Opsiyon)", type="xlsx")
 
 # --- OTOMATİK DOLDURULAN SÜTUNLAR ---
+# Bu sütunlar arkaplanda sistem tarafından doldurulduğu için arayüzde sorulmaz
 AUTO_MAPPED_COLS = {
     'core::supplierPartNumber', 'core::manufacturerPartNumber', 'core::universalProductCode',
     'core::productName', 'featureDescription::romanceCopy', 'featureDescription::overallHeight',
@@ -740,17 +741,24 @@ AUTO_MAPPED_COLS = {
     'shippingAndFulfillment::productWeight', 'shippingAndFulfillment::leadTime',
     'shippingAndFulfillment::replacementLeadTime', 'shippingAndFulfillment::shipType',
     'shippingAndFulfillment::freightClass', 'core::collectionName', 'core::manufacturerId',
-    'featureDescription::marketingCopy'
+    'featureDescription::marketingCopy',
+    'bedding::setSingle', 'bedding::productType', 'bedding::size', 'bedding::material', 'bedding::pieces'
 }
 
 def is_auto_mapped_by_fname(fname):
-    return any(kw in fname.lower() for kw in [
+    """
+    Sütun ismine göre gizleme (ÖNEMLİ DÜZELTME: Sadece birebir aynıysa gizler).
+    İçinde 'color' geçtiği için 'Leg Color' gibi zorunlu alanları gizlemez.
+    """
+    f_low = fname.lower().strip()
+    exact_matches = {
         'overall height', 'overall width', 'overall depth', 
         'overallheight', 'overallwidth', 'overalldepth', 
         'color', 'colour', 'marketing copy', 'marketingcopy',
         'set / single', 'bedding product type', 'bedding size', 
         'bedding material', 'pieces included', 'total number of pieces included'
-    ])
+    }
+    return f_low in exact_matches
 
 # --- DİNAMİK FORM VE ÖZEL ÖLÇÜ PANELİ ---
 if d_file and t_file:
@@ -782,7 +790,8 @@ if d_file and t_file:
         status = str(ws_t.cell(3, c).value).strip()
         fname = str(ws_t.cell(4, c).value).strip()
         
-        if status == "Required" and wid not in AUTO_MAPPED_COLS and not wid.startswith('media::') and not is_auto_mapped_by_fname(fname):
+        # BÜYÜK/KÜÇÜK HARF HASSASİYETİ KALDIRILDI: status.lower() == 'required'
+        if status.lower() == "required" and wid not in AUTO_MAPPED_COLS and not wid.startswith('media::') and not is_auto_mapped_by_fname(fname):
             eligible_cols.append((wid, fname))
 
     # --- ÖZEL ÖLÇÜ PANELİ ---
@@ -914,7 +923,7 @@ if d_file and t_file:
             c_io = io.BytesIO(c_file.getvalue()) if c_file else None
             
             # Artık resim dosyası argümanı yok
-            res, processed, skipped, errors = process_wayfair_v12(
+            res, processed, skipped, errors = process_wayfair_v13(
                 d_io, t_io, ui_data, carton_file=c_io, progress_callback=update_progress
             )
 
