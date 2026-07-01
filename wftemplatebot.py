@@ -721,15 +721,35 @@ def process_data_excel_only(data_file, is_us):
 
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=feat_col)
+            features_to_write = ["", "", "", "", ""]
+            
             if cell.value:
                 translated = translate_features(str(cell.value), is_us)
                 lines = [s.strip() for s in translated.split('\n') if s.strip()]
                 
-                ws.cell(row=row, column=feat_col + 1).value = lines[0] if len(lines) > 0 else ""
-                ws.cell(row=row, column=feat_col + 2).value = lines[1] if len(lines) > 1 else ""
-                ws.cell(row=row, column=feat_col + 3).value = lines[2] if len(lines) > 2 else ""
-                ws.cell(row=row, column=feat_col + 4).value = lines[3] if len(lines) > 3 else ""
-                ws.cell(row=row, column=feat_col + 5).value = " | ".join(lines[4:]) if len(lines) > 4 else ""
+                n = len(lines)
+                if n < 5:
+                    # Var olan satırları yerleştir
+                    for idx in range(n):
+                        features_to_write[idx] = lines[idx]
+                    # Hemen bir sonraki boş sütuna "Made In Türkiye" koy
+                    features_to_write[n] = "Made In Türkiye"
+                else:
+                    # İlk 4 satırı aynen yerleştir
+                    for idx in range(4):
+                        features_to_write[idx] = lines[idx]
+                    # Geri kalanları 5. sütunda birleştir ve en sonuna "Made In Türkiye" ekle
+                    remaining_text = " | ".join(lines[4:])
+                    features_to_write[4] = f"{remaining_text} | Made In Türkiye"
+            else:
+                # Özellik alanı tamamen boşsa sadece 1. özelliğe "Made In Türkiye" yaz
+                features_to_write[0] = "Made In Türkiye"
+
+            ws.cell(row=row, column=feat_col + 1).value = features_to_write[0]
+            ws.cell(row=row, column=feat_col + 2).value = features_to_write[1]
+            ws.cell(row=row, column=feat_col + 3).value = features_to_write[2]
+            ws.cell(row=row, column=feat_col + 4).value = features_to_write[3]
+            ws.cell(row=row, column=feat_col + 5).value = features_to_write[4]
 
     # 6. Ölçüleri Blok Halinde (Kg/cm ve Lbs/inch) Gruplayarak Araya Sütun Ekleme
     if is_us:
@@ -987,7 +1007,7 @@ with tab_wayfair:
         with col_h: 
             h_sel = st.multiselect("Height (Yükseklik) Yazılacaklar", options=options_list)
         with col_w: 
-            w_sel = st.multiselect("Width (Genişlik) Yazılacaklar", options=options_list)
+            w_sel = st.multiselect("Genişlik (Width) Yazılacaklar", options=options_list)
         with col_d: 
             d_sel = st.multiselect("Depth (Derinlik) Yazılacaklar", options=options_list)
 
