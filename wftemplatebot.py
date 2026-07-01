@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import openpyxl
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Alignment, Border, Side
+from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 import re
 import io
 import copy
@@ -829,7 +829,7 @@ def process_data_excel_only(data_file, is_us):
                 if c_data['alignment']: new_cell.alignment = c_data['alignment']
                 if c_data['number_format']: new_cell.number_format = c_data['number_format']
 
-    # --- 8. YENİ EKLENEN: Sütun Genişliği (12), Kalın Kenarlıklar ve Hizalamalar ---
+    # --- 8. YENİ EKLENEN: Sütun Genişliği (12), Kalın Kenarlıklar, Hizalamalar, Fontlar ve Renklendirme ---
     medium_border = Border(
         left=Side(style='medium', color='000000'),
         right=Side(style='medium', color='000000'),
@@ -837,20 +837,27 @@ def process_data_excel_only(data_file, is_us):
         bottom=Side(style='medium', color='000000')
     )
     
+    # Programın oluşturduğu/yazdığı sütunlar için pastel tonlu arka plan renkleri
+    column_colors = {
+        'Feature 1': "DDEBF7",                 # Yumuşak Açık Mavi
+        'Feature 2': "E2EFDA",                 # Yumuşak Açık Yeşil
+        'Feature 3': "FFF2CC",                 # Yumuşak Açık Sarı
+        'Feature 4': "FCE4D6",                 # Yumuşak Açık Şeftali
+        'Feature 5': "E8D8FC",                 # Yumuşak Açık Lila / Mor
+        'WEIGHT (Lbs)': "F8CECC",              # Yumuşak Açık Pembe
+        'PACKAGING SIZE - X (in)': "D1F2EB",   # Yumuşak Açık Turkuaz
+        'PACKAGING SIZE - Y (in)': "E8F8F5",   # Yumuşak Açık Nane Yeşil
+        'PACKAGING SIZE - Z (in)': "E6F2F7"    # Yumuşak Açık Mavi-Gri
+    }
+    
     headers = get_headers()
     for col_name, col_idx in headers.items():
         col_letter = get_column_letter(col_idx)
         # Sütun genişliklerini standart 12 ile sınırlandırıyoruz
         ws.column_dimensions[col_letter].width = 12
         
-        name_upper = str(col_name).upper()
-        # İçeriklere göre yatay hizalama tespiti
-        if 'WEIGHT' in name_upper or 'SIZE' in name_upper or 'PACKAGE' in name_upper:
-            col_align = Alignment(horizontal='center', vertical='center', wrap_text=False)
-        elif 'FEATURE' in name_upper or 'DESCRIPTION' in name_upper or 'COLOR' in name_upper:
-            col_align = Alignment(horizontal='left', vertical='center', wrap_text=False)
-        else:
-            col_align = Alignment(horizontal='center', vertical='center', wrap_text=False)
+        col_color_hex = column_colors.get(col_name)
+        col_fill = PatternFill(start_color=col_color_hex, end_color=col_color_hex, fill_type="solid") if col_color_hex else None
             
         for row in range(1, ws.max_row + 1):
             cell = ws.cell(row=row, column=col_idx)
@@ -860,9 +867,20 @@ def process_data_excel_only(data_file, is_us):
             
             # Başlık satırı (Row 1) her zaman ortalı olsun
             if row == 1:
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=False)
+                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             else:
-                cell.alignment = col_align
+                # Kullanıcı isteği: Doldur ve iki yana yasla (justify ve wrap text)
+                cell.alignment = Alignment(horizontal='justify', vertical='center', wrap_text=True)
+                
+                # Kullanıcı isteği: Başlık satırı hariç tüm yazılar Tahoma 8 şeklinde olsun
+                # Orijinal kalın (bold) ve eğik (italic) olma durumunu koruyalım
+                is_bold = cell.font.bold if (cell.font and cell.font.bold is not None) else False
+                is_italic = cell.font.italic if (cell.font and cell.font.italic is not None) else False
+                cell.font = Font(name='Tahoma', size=8, bold=is_bold, italic=is_italic)
+                
+                # Sütun bazında renklendirme (Pastel tonlar)
+                if col_fill:
+                    cell.fill = col_fill
 
     # Satır yüksekliklerini 18 olarak sabitleyip "tek satır" görünümüne kavuştur
     for row in range(1, ws.max_row + 1):
