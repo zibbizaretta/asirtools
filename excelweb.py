@@ -107,8 +107,19 @@ st.set_page_config(page_title="Asir Tools", layout="wide")
 
 with st.sidebar:
     st.title("Asir Tools")
-    page = st.radio("Select Tool:", ["WF Template Tool", "PO Tracking Tool"])
+    
+    # 1. GÜNCELLEME: "PO Tracking Tool" listeye ilk sıradan eklendi.
+    page = st.radio("Select Tool:", ["PO Tracking Tool", "WF Template Tool"])
+    
     st.divider()
+    
+    # 2. GÜNCELLEME: Programlar arası hızlı bağlantılar eklendi.
+    st.subheader("🔗 Hızlı Bağlantılar")
+    st.markdown("[📦 Wayfair Template Bot](https://wftemplatebotpy.streamlit.app/)")
+    st.markdown("[🛠️ Asir Tools (Mevcut)](https://excelwebpy-asirtools.streamlit.app/)")
+    
+    st.divider()
+    
     if st.button("Home / Reset", use_container_width=True):
         st.write('<meta http-equiv="refresh" content="0;url=https://excelwebpy-asirtools.streamlit.app/">', unsafe_allow_html=True)
         st.stop()
