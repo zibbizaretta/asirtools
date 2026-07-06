@@ -9,6 +9,8 @@ import copy
 import json
 from streamlit_cookies_manager import EncryptedCookieManager
 
+st.set_page_config(page_title="Wayfair & Data Akıllı Ürün Robotu V19", layout="wide")
+
 # --- 1. ÇEREZ (COOKIE) KALICI HAFIZA SİSTEMİ ---
 if 'cookies' not in st.session_state:
     st.session_state.cookies = EncryptedCookieManager(
@@ -974,11 +976,6 @@ def process_data_excel_only(data_file, is_us):
     wb.save(output)
     return output.getvalue()
 
-
-# --- 4. STREAMLIT ARAYÜZÜ (V19) ---
-
-st.set_page_config(page_title="Wayfair & Data Akıllı Ürün Robotu V19", layout="wide")
-st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V19")
 
 # --- SOL MENÜ ---
 with st.sidebar:
