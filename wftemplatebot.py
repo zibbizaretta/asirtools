@@ -973,7 +973,6 @@ with st.sidebar:
     )
     is_us = region_selection.startswith("US") # Seçim US ile başlıyorsa True döner
     
-    st.info("📌 Marka (Brand) seçimi artık Data Excel'inizdeki kategoriye göre otomatik yapılmaktadır. Collection Name kullanımı kaldırılmıştır.")
 
 # SEKME (TAB) YAPISI
 tab_wayfair, tab_data = st.tabs(["🎯 Wayfair Şablonu Hazırla", "🛠️ Sadece Data Excel'i Çevir"])
