@@ -968,7 +968,7 @@ with st.sidebar:
     # Aç-kapa butonunu kaldırıp, modern Radyo (Seçim) butonu ekledik
     region_selection = st.radio(
         "🌎 Bölge Seçimi",
-        ["US (İnç / Lbs / Yatak Std.)", "EU (cm / Kg / Yatak Std.)"],
+        ["US (İnç / Lbs)", "EU (cm / Kg)"],
         horizontal=False # Yan yana veya alt alta durmasını kontrol eder
     )
     is_us = region_selection.startswith("US") # Seçim US ile başlıyorsa True döner
