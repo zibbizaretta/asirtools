@@ -973,8 +973,15 @@ with st.sidebar:
     )
     is_us = region_selection.startswith("US") # Seçim US ile başlıyorsa True döner
 
+    
+    st.divider()
+    
+    # 2. GÜNCELLEME: Programlar arası hızlı bağlantılar eklendi.
+    st.subheader("🔗 Hızlı Bağlantılar")
     st.markdown("[🛠️ Asir Tools](https://excelwebpy-asirtools.streamlit.app/)")
-
+    
+    st.divider()
+    
 # SEKME (TAB) YAPISI
 tab_wayfair, tab_data = st.tabs(["🎯 Wayfair Şablonu Hazırla", "🛠️ Sadece Data Excel'i Çevir"])
 
