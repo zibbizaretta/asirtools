@@ -257,6 +257,36 @@ def generate_bedding_note(text, h_val, w_val, bed_size, is_us):
         
     return ""
 
+def get_brand_by_category(category_text):
+    """
+    Kategori metnine göre otomatik marka döndürür. (Türkçe ve İngilizce karşılıklarla)
+    """
+    if pd.isna(category_text) or not str(category_text).strip():
+        return ""
+        
+    cat_lower = str(category_text).lower()
+    
+    if "sofa" in cat_lower or "koltuk" in cat_lower or "kanepe" in cat_lower: 
+        return "Hanah Home"
+    elif "wall deco" in cat_lower or "duvar" in cat_lower or "tablo" in cat_lower: 
+        return "Wallity"
+    elif "rug" in cat_lower or "carpet" in cat_lower or "halı" in cat_lower or "kilim" in cat_lower: 
+        return "Conceptum Hypnose"
+    elif "kitchen" in cat_lower or "mutfak" in cat_lower: 
+        return "Hermia Concept"
+    elif "lighting" in cat_lower or "aydınlatma" in cat_lower or "avize" in cat_lower or "lamba" in cat_lower: 
+        return "Opviq"
+    elif "furniture" in cat_lower or "mobilya" in cat_lower: 
+        return "Skye Decor"
+    elif "bathroom" in cat_lower or "banyo" in cat_lower: 
+        return "Nuit des reves"
+    elif "bedroom" in cat_lower or "yatak odası" in cat_lower: 
+        return "Nuit des reves"
+    elif "decoration" in cat_lower or "dekorasyon" in cat_lower or "aksesuar" in cat_lower: 
+        return "Evila Originals"
+        
+    return ""
+
 
 # --- 3. ANA İŞLEME MOTORU (WAYFAIR ŞABLONU İÇİN) ---
 
@@ -272,6 +302,9 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
         df_data = df_data.dropna(how='all')
         
     df_data = df_data.reset_index(drop=True)
+    
+    # Kategori sütununu otomatik bulmaya çalışalım (CATEGORY, KATEGORİ, vs.)
+    cat_col_name = next((col for col in df_data.columns if 'categor' in str(col).lower() or 'kategori' in str(col).lower()), None)
     
     carton_dict = {}
     if carton_file is not None:
@@ -384,6 +417,8 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
         
         prod_weight_lbs = round((kg - 0.1) * 2.20462, 2) if kg > 0.1 else 0
 
+        leave_carton_blank = False # Çoklu paket var ve koli detayı yoksa kutuyu boş bırakma bayrağı
+
         if carton_file is not None and sku_key in carton_dict and len(carton_dict[sku_key]) > 0:
             cartons = carton_dict[sku_key]
             kg = cartons[0]['kg']
@@ -405,13 +440,9 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 processed_skus_for_cartons.add(sku_key)
                 
         elif pkg_count != 1:
-            skipped.append({
-                'Satır': index + 2, 
-                'Ürün Kodu': sku_key, 
-                'Açıklama': str(row.get('DESCRIPTION', '') or '')[:60], 
-                'Neden': f"Paket Sayısı = {pkg_count} ama paket excelinde verisi yok (Atlandı)"
-            })
-            continue
+            # Carton file yok veya bulunamadı, ama paket sayısı 1'den büyük.
+            # Eskisi gibi ürünü atlamıyoruz, koli bilgilerini boş geçeceğiz.
+            leave_carton_blank = True
 
         try:
             feat_text = row.get('FEATURES', '')
@@ -432,6 +463,10 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
             else:
                 color_val = re.sub(r'\s*;\s*', '; ', color_val.replace('\n', ';').replace(',', ';').replace('/', ';')).strip('; ')
 
+            # Kategoriye göre markayı otomatik belirle
+            cat_val = row.get(cat_col_name, '') if cat_col_name else ''
+            auto_brand = get_brand_by_category(cat_val)
+
             mappings = {
                 'core::supplierPartNumber': sku_key, 
                 'core::manufacturerPartNumber': sku_key, 
@@ -439,17 +474,11 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 'core::productName': b_info['new_name'] if b_info['new_name'] else row.get('DESCRIPTION'),
                 'price::wholesalePrice': row.get('PRICE'), 
                 'price::manufacturerSuggestedRetailPrice': row.get('RETAIL PRICE'),
-                'shippingAndFulfillment::weight': lbs, 
-                'shippingAndFulfillment::height': x_in, 
-                'shippingAndFulfillment::width': y_in, 
-                'shippingAndFulfillment::depth': z_in,
-                'shippingAndFulfillment::productWeight': prod_weight_lbs,
                 'featureDescription::overallHeight': convert_to_inch(raw_h) if ui_data['is_us'] else raw_h,
                 'featureDescription::overallWidth': convert_to_inch(raw_w) if ui_data['is_us'] else raw_w,
                 'featureDescription::overallDepth': convert_to_inch(raw_d) if ui_data['is_us'] else raw_d,
                 'featureDescription::color': color_val, 
-                'core::collectionName': ui_data['coll_name'], 
-                'core::manufacturerId': ui_data['brand'],
+                'core::manufacturerId': auto_brand, # Markayı artık fonksiyondan alıyoruz
                 'shippingAndFulfillment::minimumOrderQuantity': 1, 
                 'shippingAndFulfillment::forceQuantityMultiplier': 1, 
                 'shippingAndFulfillment::displaySetQuantity': 1,
@@ -459,6 +488,20 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 'bedding::material': b_info['material'], 
                 'bedding::pieces': b_info['pieces']
             }
+            
+            # Karton bilgilerini yaz (veya paket çokluysa boş bırak)
+            if leave_carton_blank:
+                mappings['shippingAndFulfillment::weight'] = ""
+                mappings['shippingAndFulfillment::height'] = ""
+                mappings['shippingAndFulfillment::width'] = ""
+                mappings['shippingAndFulfillment::depth'] = ""
+                mappings['shippingAndFulfillment::productWeight'] = ""
+            else:
+                mappings['shippingAndFulfillment::weight'] = lbs
+                mappings['shippingAndFulfillment::height'] = x_in
+                mappings['shippingAndFulfillment::width'] = y_in
+                mappings['shippingAndFulfillment::depth'] = z_in
+                mappings['shippingAndFulfillment::productWeight'] = prod_weight_lbs
 
             urls = []
             for col in df_data.columns:
@@ -481,7 +524,9 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
             if ui_data['is_us']:
                 mappings['shippingAndFulfillment::leadTime'] = 600
                 mappings['shippingAndFulfillment::replacementLeadTime'] = 120
-                if x_in > 0 and y_in > 0 and z_in > 0:
+                
+                # Karton boş değilse ve geçerli sayılar varsa Shipping Type hesapla
+                if not leave_carton_blank and isinstance(x_in, (int, float)) and x_in > 0 and y_in > 0 and z_in > 0:
                     stype, fclass = get_ship_type(lbs, x_in, y_in, z_in)
                     mappings['shippingAndFulfillment::shipType'] = stype
                     if fclass: 
@@ -919,21 +964,16 @@ st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V19")
 # --- SOL MENÜ ---
 with st.sidebar:
     st.header("⚙️ Genel Ayarlar")
-    is_us = st.toggle("US Bölgesi (İnç/Lbs/Yatak Standartları)", value=True)
     
-    brand_list = [
-        "Lütfen Seçiniz...", 
-        "Wallity", 
-        "Hanah Home", 
-        "Conceptum Hypnose", 
-        "Hermia Concept", 
-        "Opviq", 
-        "Skye Decor", 
-        "Nuit des reves", 
-        "Evila Originals"
-    ]
-    brand = st.selectbox("Brand (Marka)", brand_list, index=0, key="brand_sel")
-    coll_name = st.text_input("Collection Name", value="", key="coll_name")
+    # Aç-kapa butonunu kaldırıp, modern Radyo (Seçim) butonu ekledik
+    region_selection = st.radio(
+        "🌎 Bölge Seçimi",
+        ["US (İnç / Lbs / Yatak Std.)", "EU (cm / Kg / Yatak Std.)"],
+        horizontal=False # Yan yana veya alt alta durmasını kontrol eder
+    )
+    is_us = region_selection.startswith("US") # Seçim US ile başlıyorsa True döner
+    
+    st.info("📌 Marka (Brand) seçimi artık Data Excel'inizdeki kategoriye göre otomatik yapılmaktadır. Collection Name kullanımı kaldırılmıştır.")
 
 # SEKME (TAB) YAPISI
 tab_wayfair, tab_data = st.tabs(["🎯 Wayfair Şablonu Hazırla", "🛠️ Sadece Data Excel'i Çevir"])
@@ -1082,17 +1122,10 @@ with tab_wayfair:
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🚀 Wayfair Dosyasını Hazırla", type="primary", width='stretch'):
-            if brand == "Lütfen Seçiniz...": 
-                st.error("⚠️ Lütfen sol menüden bir Marka (Brand) seçiniz!")
-                st.stop()
-            if not coll_name.strip(): 
-                st.error("⚠️ Lütfen sol menüden Collection Name alanını doldurunuz!")
-                st.stop()
-                
+            
+            # Artık marka veya collection name zorunluluğu yok, direkt geçiyoruz
             ui_data = {
                 'is_us': is_us, 
-                'brand': brand, 
-                'coll_name': coll_name, 
                 'dyn_drops': dyn_selections, 
                 'dim_mappings': dim_mappings, 
                 'missing_cols': []
@@ -1137,12 +1170,11 @@ with tab_wayfair:
             
             if processed > 0:
                 st.success(f"✅ {processed} ürün başarıyla işlendi.")
-                safe_coll_name = str(coll_name).strip() if str(coll_name).strip() else "Wayfair_Upload"
-                
+                # İndirme ismi sabitlendi
                 st.download_button(
                     label="📥 Hazır Excel'i İndir", 
                     data=res, 
-                    file_name=f"{safe_coll_name}-Template.xlsx", 
+                    file_name="Wayfair_Upload-Template.xlsx", 
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
 
