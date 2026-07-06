@@ -9,6 +9,9 @@ import pypdf
 from openpyxl.styles import Alignment
 from streamlit_cookies_manager import EncryptedCookieManager
 
+# --- EN ÖNEMLİ KURAL: SAYFA AYARLARI İLK SIRADA OLMALI ---
+st.set_page_config(page_title="Asir Tools", layout="wide")
+
 # --- CONSTANTS ---
 KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
@@ -24,7 +27,8 @@ if 'cookies' not in st.session_state:
 
 cookies = st.session_state.cookies
 if not cookies.ready():
-    # Çerezler yüklenene kadar programı 1 salise bekletir
+    # Çerezler yüklenene kadar siyah ekran yerine bekleme mesajı gösterir
+    st.info("Kullanıcı ayarlarınız yükleniyor, lütfen bekleyin...")
     st.stop()
 
 # --- HELPER FUNCTIONS (GENERAL & WF TEMPLATE TOOL) ---
@@ -113,8 +117,6 @@ def process_pdfs_robust(pdf_files):
     return pd.DataFrame(final_rows)
 
 # --- APP INTERFACE ---
-st.set_page_config(page_title="Asir Tools", layout="wide")
-
 with st.sidebar:
     st.title("Asir Tools")
     
