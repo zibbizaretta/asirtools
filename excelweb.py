@@ -7,11 +7,25 @@ from datetime import datetime
 import streamlit as st
 import pypdf
 from openpyxl.styles import Alignment
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # --- CONSTANTS ---
 KG_TO_LBS = 2.20462
 CM_TO_INCH = 0.393701
 MADE_IN_TURKEY = "Made In Türkiye"
+
+# --- 1. ÇEREZ (COOKIE) KALICI HAFIZA SİSTEMİ ---
+# Kullanıcıların tarayıcısına özel şifreli bir çerez yöneticisi başlatıyoruz
+if 'cookies' not in st.session_state:
+    st.session_state.cookies = EncryptedCookieManager(
+        prefix="asir_excel", # Çerezlerin başına eklenecek isim
+        password="asir_tools_secret_password_123" # Çerezleri şifrelemek için anahtar
+    )
+
+cookies = st.session_state.cookies
+if not cookies.ready():
+    # Çerezler yüklenene kadar programı 1 salise bekletir
+    st.stop()
 
 # --- HELPER FUNCTIONS (GENERAL & WF TEMPLATE TOOL) ---
 def extract_dimensions_from_string(text_to_search):
@@ -68,8 +82,6 @@ def convert_weight_value(val_kg, weight_unit_choice):
 def process_pdfs_robust(pdf_files):
     all_data = {}
     po_pattern = re.compile(r"((?:CS|CA)\d{9,})")
-    # Gelişmiş Tracking Regex: 00 ile başlayan 18-20 hane veya 12-15 haneli numaraları yakalar
-    # Barkodlardan kaçınmak için etrafında harf/rakam olmayan izole sayıları arar
     trk_pattern = re.compile(r"(?<![a-zA-Z0-9])(\d{12,20})(?![a-zA-Z0-9])")
     
     for pdf_file in pdf_files:
@@ -79,7 +91,6 @@ def process_pdfs_robust(pdf_files):
                 text = page.extract_text()
                 if not text: continue
                 
-                # --- ÇİFT KATMANLI TARAMA MANTIĞI ---
                 chunks = po_pattern.split(text)
                 for j in range(1, len(chunks), 2):
                     po_number = chunks[j].strip()
@@ -89,7 +100,6 @@ def process_pdfs_robust(pdf_files):
                     if found_trks:
                         if po_number not in all_data: all_data[po_number] = set()
                         for t in found_trks:
-                            # 26 ile başlayan dikey statik kodları eliyoruz
                             if not t.startswith("26"):
                                 all_data[po_number].add(t)
         except Exception as e:
@@ -108,14 +118,19 @@ st.set_page_config(page_title="Asir Tools", layout="wide")
 with st.sidebar:
     st.title("Asir Tools")
     
-    # 1. GÜNCELLEME: "PO Tracking Tool" listeye ilk sıradan eklendi.
-    page = st.radio("Select Tool:", ["PO Tracking Tool", "WF Template Tool"])
+    # Hangi aracı kullandığımızı da hafızaya alalım
+    page_def = int(cookies.get('page_idx', 0))
+    page = st.radio("Select Tool:", ["PO Tracking Tool", "WF Template Tool"], index=page_def)
+    new_page_def = 0 if page == "PO Tracking Tool" else 1
+    if new_page_def != page_def:
+        cookies['page_idx'] = str(new_page_def)
+        cookies.save()
     
     st.divider()
     
-    # 2. GÜNCELLEME: Programlar arası hızlı bağlantılar eklendi.
     st.subheader("🔗 Hızlı Bağlantılar")
     st.markdown("[📦 Wayfair Template Bot](https://wftemplatebotpy.streamlit.app/)")
+    st.markdown("[🛠️ Asir Tools (Mevcut)](https://excelwebpy-asirtools.streamlit.app/)")
     
     st.divider()
     
@@ -126,12 +141,38 @@ with st.sidebar:
 # --- PAGE 1: WF TEMPLATE TOOL ---
 if page == "WF Template Tool":
     st.header("WF Template Tool")
+    
     with st.sidebar:
         st.subheader("Settings")
-        size_unit = st.radio("Size Unit:", ("cm", "inch"), index=1)
-        weight_unit = st.radio("Weight Unit:", ("KG", "LBS"), index=1)
-        add_made_in_tr = st.checkbox("Add 'Made in Türkiye'", value=True)
-        feature_count = st.slider("Feature Column Count:", 1, 10, 5)
+        
+        # --- Hafızadan okuma (yoksa varsayılan) ---
+        su_idx_def = int(cookies.get('su_idx', 1))
+        wu_idx_def = int(cookies.get('wu_idx', 1))
+        add_tr_def = cookies.get('add_tr', 'True') == 'True'
+        f_count_def = int(cookies.get('f_count', 5))
+        
+        # Seçim yapma ve değişirse çereze kaydetme
+        size_unit = st.radio("Size Unit:", ("cm", "inch"), index=su_idx_def)
+        new_su_idx = 0 if size_unit == "cm" else 1
+        if new_su_idx != su_idx_def:
+            cookies['su_idx'] = str(new_su_idx)
+            cookies.save()
+
+        weight_unit = st.radio("Weight Unit:", ("KG", "LBS"), index=wu_idx_def)
+        new_wu_idx = 0 if weight_unit == "KG" else 1
+        if new_wu_idx != wu_idx_def:
+            cookies['wu_idx'] = str(new_wu_idx)
+            cookies.save()
+
+        add_made_in_tr = st.checkbox("Add 'Made in Türkiye'", value=add_tr_def)
+        if add_made_in_tr != add_tr_def:
+            cookies['add_tr'] = str(add_made_in_tr)
+            cookies.save()
+
+        feature_count = st.slider("Feature Column Count:", 1, 10, f_count_def)
+        if feature_count != f_count_def:
+            cookies['f_count'] = str(feature_count)
+            cookies.save()
 
     uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx", "xls"])
     if uploaded_file:
