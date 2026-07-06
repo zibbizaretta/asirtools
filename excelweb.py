@@ -116,7 +116,6 @@ with st.sidebar:
     # 2. GÜNCELLEME: Programlar arası hızlı bağlantılar eklendi.
     st.subheader("🔗 Hızlı Bağlantılar")
     st.markdown("[📦 Wayfair Template Bot](https://wftemplatebotpy.streamlit.app/)")
-    st.markdown("[🛠️ Asir Tools (Mevcut)](https://excelwebpy-asirtools.streamlit.app/)")
     
     st.divider()
     
