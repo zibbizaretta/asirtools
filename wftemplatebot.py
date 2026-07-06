@@ -6,10 +6,29 @@ from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 import re
 import io
 import copy
+import json
+from streamlit_cookies_manager import EncryptedCookieManager
 
-# --- 1. HAFIZA (SESSION STATE) ---
+# --- 1. ÇEREZ (COOKIE) KALICI HAFIZA SİSTEMİ ---
+if 'cookies' not in st.session_state:
+    st.session_state.cookies = EncryptedCookieManager(
+        prefix="asir_wf", # Çerezlerin başına eklenecek isim
+        password="asir_wf_secret_password_123" # Çerezleri şifrelemek için anahtar
+    )
+
+cookies = st.session_state.cookies
+if not cookies.ready():
+    st.stop()
+
+# Çerezlerdeki eski tercihleri alıp session'a aktarıyoruz
+saved_prefs_str = cookies.get('user_prefs', '{}')
+try:
+    saved_prefs = json.loads(saved_prefs_str)
+except:
+    saved_prefs = {}
+
 if 'user_prefs' not in st.session_state:
-    st.session_state['user_prefs'] = {}
+    st.session_state['user_prefs'] = saved_prefs
 
 # --- 2. YARDIMCI VE LOJİSTİK FONKSİYONLAR ---
 
@@ -965,18 +984,24 @@ st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V19")
 with st.sidebar:
     st.header("⚙️ Genel Ayarlar")
     
-    # Aç-kapa butonunu kaldırıp, modern Radyo (Seçim) butonu ekledik
+    # Çerezden alınan bölge ayarı
+    region_def = int(cookies.get('region_idx', 0))
     region_selection = st.radio(
         "🌎 Bölge Seçimi",
         ["US (İnç / Lbs)", "EU (cm / Kg)"],
-        horizontal=False # Yan yana veya alt alta durmasını kontrol eder
+        horizontal=False,
+        index=region_def
     )
-    is_us = region_selection.startswith("US") # Seçim US ile başlıyorsa True döner
-
+    is_us = region_selection.startswith("US")
+    
+    # Değişiklik varsa çerezi güncelle
+    new_reg = 0 if is_us else 1
+    if new_reg != region_def:
+        cookies['region_idx'] = str(new_reg)
+        cookies.save()
     
     st.divider()
     
-    # 2. GÜNCELLEME: Programlar arası hızlı bağlantılar eklendi.
     st.subheader("🔗 Hızlı Bağlantılar")
     st.markdown("[🛠️ Asir Tools](https://excelwebpy-asirtools.streamlit.app/)")
     
@@ -1120,17 +1145,21 @@ with tab_wayfair:
                         
                     st.session_state['user_prefs'][wid] = def_val
 
-                saved = st.session_state['user_prefs'].get(wid, [])
-                sel = st.multiselect(fname, options=opts, default=[x for x in saved if x in opts], key=f"sel_{wid}")
+                saved_list = st.session_state['user_prefs'].get(wid, [])
+                sel = st.multiselect(fname, options=opts, default=[x for x in saved_list if x in opts], key=f"sel_{wid}")
                 dyn_selections[wid] = sel
                 st.session_state['user_prefs'][wid] = sel
                 
             idx += 1
 
+        # Sayfa sonuna gelindiğinde çerezlerdeki ayarlarla şu anki ayarlar farklıysa çerezi kaydet
+        if st.session_state['user_prefs'] != saved_prefs:
+            cookies['user_prefs'] = json.dumps(st.session_state['user_prefs'])
+            cookies.save()
+
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🚀 Wayfair Dosyasını Hazırla", type="primary", width='stretch'):
             
-            # Artık marka veya collection name zorunluluğu yok, direkt geçiyoruz
             ui_data = {
                 'is_us': is_us, 
                 'dyn_drops': dyn_selections, 
@@ -1177,14 +1206,12 @@ with tab_wayfair:
             
             if processed > 0:
                 st.success(f"✅ {processed} ürün başarıyla işlendi.")
-                # İndirme ismi sabitlendi
                 st.download_button(
                     label="📥 Hazır Excel'i İndir", 
                     data=res, 
                     file_name="Wayfair_Upload-Template.xlsx", 
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-
 
 # ==========================================
 # SEKME 2: SADECE DATA EXCEL'İ DÖNÜŞTÜR (YENİ)
