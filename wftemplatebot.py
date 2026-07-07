@@ -281,7 +281,7 @@ def get_brand_by_category(category_text):
     elif "bathroom" in cat_lower or "banyo" in cat_lower: 
         return "Nuit des reves"
     elif "bedroom" in cat_lower or "yatak odası" in cat_lower: 
-        return "Nuit des reves"
+        return "L'Essentiel Linge de Maison"
     elif "decoration" in cat_lower or "dekorasyon" in cat_lower or "aksesuar" in cat_lower: 
         return "Evila Originals"
         
