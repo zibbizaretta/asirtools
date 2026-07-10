@@ -817,7 +817,7 @@ with tab_wayfair:
 
         st.markdown("---")
         st.subheader(f"📋 {target_name} — Özellik Eşleştirmeleri")
-        st.info("💡 Sistem, yüklediğiniz şablondaki 'Valid Values' (Geçerli Değerler) sekmesini otomatik okur ve Wayfair'in resmi olarak kabul ettiği seçenekleri listeler.")
+        st.info("💡 Sistem, yüklediğiniz şablondaki 'Valid Values' sekmesini okur ve geçerli seçenekleri listeler.")
         
         global_custom_vals = st.text_input("✨ Açılır Listelerde Bulamadığınız Özel Bir Değer mi Var? (Buraya yazın, aşağıdaki tüm listelere eklensin)", placeholder="Örn: My Custom Value, Başka Bir Değer")
         custom_opts_list = [x.strip() for x in global_custom_vals.split(',') if x.strip()]
@@ -831,7 +831,7 @@ with tab_wayfair:
                 continue
                 
             with cols_ui[idx % 3]:
-                # --- SELECT ALL VE GEREKSİZ TALİMATLARI FİLTRELEME (YENİ) ---
+                # BURASI ÖNEMLİ: RAM TAŞMASINI (SEGMENTATION FAULT) ÖNLEYEN YENİ KOD
                 if df_v is not None and fname in df_v.columns:
                     raw_opts = df_v[fname].dropna().unique()
                     opts = []
@@ -840,15 +840,15 @@ with tab_wayfair:
                         o_low = o_str.lower()
                         if not o_str or o_str == 'None': continue
                         
-                        # Wayfair'in Valid Values sekmesinden sızan gereksiz kelimeleri engelle
+                        # Wayfair gereksiz kelimeleri süzme
                         if o_low in ['required', 'conditional', 'additional', 'select', 'text', 'number', 'select all']: continue
                         if 'please choose one or more' in o_low: continue
                         if 'select all that apply' in o_low: continue
                         
                         opts.append(o_str)
                     
-                    # Kopya (çift) değerleri temizle ve opts listesine aktar
-                    opts = list(dict.fromkeys(opts))
+                    # RAM dostu temizleme ve İLK 500 İLE SINIRLANDIRMA
+                    opts = list(dict.fromkeys(opts))[:500]
                 else: 
                     opts = ["Yes", "No", "Does Not Apply"]
 
@@ -858,7 +858,6 @@ with tab_wayfair:
 
                 f_low = fname.lower()
                 
-                # --- ESKİ DEFAULT CEVAPLARI GERİ GETİRDİK ---
                 if wid not in st.session_state['user_prefs']:
                     def_val = []
                     
