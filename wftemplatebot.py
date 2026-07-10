@@ -7,6 +7,12 @@ import re
 import io
 import copy
 
+try:
+    from streamlit_tags import st_tags
+    HAS_TAGS = True
+except ImportError:
+    HAS_TAGS = False
+
 # --- 1. HAFIZA (SESSION STATE) ---
 if 'user_prefs' not in st.session_state:
     st.session_state['user_prefs'] = {}
@@ -1039,6 +1045,9 @@ with tab_wayfair:
         st.markdown("---")
         st.subheader(f"📋 {target_name} — Diğer Özellikler (Seçim veya Özel Giriş)")
         
+        if not HAS_TAGS:
+            st.info("💡 Dropdown'a dışarıdan kelime yazıp 'Enter' ile ekleyebilmek için terminal/komut satırına `pip install streamlit-tags` yazarak küçük bir eklenti kurmanız önerilir. (Sunucuda kullanıyorsanız requirements.txt dosyasına ekleyin). Aksi halde standart liste çalışır.")
+            
         dyn_selections = {}
         cols_ui = st.columns(3)
         idx = 0
@@ -1084,15 +1093,23 @@ with tab_wayfair:
 
                 saved = st.session_state['user_prefs'].get(wid, def_val)
                 
-                # Hem açılır liste hem de özel değer girmeyi sağlayan birleşim
-                sel = st.multiselect(fname, options=opts, default=[x for x in saved if x in opts], key=f"sel_{wid}")
-                custom_val = st.text_input(f"+ Özel {fname}", key=f"custom_{wid}", placeholder="Örn: Özel Kumaş (Opsiyonel)")
+                # Kullanıcının daha önce girdiği özel değerleri opts listesine dahil edelim (hata vermemesi için)
+                for s_val in saved:
+                    if s_val not in opts:
+                        opts.append(s_val)
                 
-                combined = list(sel)
-                if custom_val.strip():
-                    combined.append(custom_val.strip())
+                if HAS_TAGS:
+                    sel = st_tags(
+                        label=fname,
+                        text="Seçin veya yazıp Enter'a basın",
+                        value=saved,
+                        suggestions=opts,
+                        key=f"sel_{wid}"
+                    )
+                else:
+                    sel = st.multiselect(fname, options=opts, default=saved, key=f"sel_{wid}")
                     
-                dyn_selections[wid] = combined
+                dyn_selections[wid] = sel
                 st.session_state['user_prefs'][wid] = sel
                 
             idx += 1
