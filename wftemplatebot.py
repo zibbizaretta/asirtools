@@ -7,12 +7,6 @@ import re
 import io
 import copy
 
-try:
-    from streamlit_tags import st_tags
-    HAS_TAGS = True
-except ImportError:
-    HAS_TAGS = False
-
 # --- 1. HAFIZA (SESSION STATE) ---
 if 'user_prefs' not in st.session_state:
     st.session_state['user_prefs'] = {}
@@ -39,10 +33,8 @@ def extract_overall_dims(text):
     d = get_dim_val(r'(?:Depth|Derinlik|Front to Back|\bD\b)\s*[:\-\s]\s*(\d+(?:[.,]\d+)?)', text)
     
     if dia:
-        if not w: 
-            w = dia
-        if not d: 
-            d = dia
+        if not w: w = dia
+        if not d: d = dia
             
     if not any([w, h, d]):
         size_match = re.search(
@@ -58,31 +50,21 @@ def extract_overall_dims(text):
     return h, w, d
 
 def convert_to_inch(val):
-    if val: 
-        return round(val * 0.393701, 2)
+    if val: return round(val * 0.393701, 2)
     return None
 
 def translate_features(text, do_conversion):
-    if pd.isna(text): 
-        return ""
+    if pd.isna(text): return ""
     text = str(text)
     text = re.sub(r'Ø\s*[:\-]?\s*', 'Diameter: ', text)
     text = re.sub(r'(?i)\bÇap\s*[:\-]?\s*', 'Diameter: ', text)
     
-    if not do_conversion: 
-        return text
+    if not do_conversion: return text
 
-    def c_in(m): 
-        return f"{round(float(m.group(1).replace(',', '.')) * 0.393701, 2)}"
-    
-    def c_mm(m): 
-        return f"{round(float(m.group(1).replace(',', '.')) * 0.0393701, 2)}"
-    
-    def c_kg(m): 
-        return f"{round(float(m.group(1).replace(',', '.')) * 2.20462, 2)}"
-    
-    def c_ml(m): 
-        return f"{round(float(m.group(1).replace(',', '.')) * 0.033814, 2)}"
+    def c_in(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.393701, 2)}"
+    def c_mm(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.0393701, 2)}"
+    def c_kg(m): return f"{round(float(m.group(1).replace(',', '.')) * 2.20462, 2)}"
+    def c_ml(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.033814, 2)}"
 
     text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*cm(?![a-zA-Z])', lambda m: c_in(m) + ' inches', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*mm(?![a-zA-Z])', lambda m: c_mm(m) + ' inches', text, flags=re.IGNORECASE)
@@ -91,29 +73,20 @@ def translate_features(text, do_conversion):
     text = re.sub(r'(?<![a-zA-Z0-9:])(\d+(?:[\.,]\d+)?)(?=\s*[xX×]\s*\d)', c_in, text)
     text = re.sub(r'(?<![a-zA-Z])\bcm\b(?![a-zA-Z])', 'inches', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z])\bmm\b(?![a-zA-Z])', 'inches', text, flags=re.IGNORECASE)
-    
     return text
 
 def get_product_logistics(cartons, is_us):
-    """
-    Zorunlu Sıralama ve Kapsayıcı LTL (Any) Kontrolü.
-    Verilen tüm kutuları tarar, en büyük olanı (Hacim + Ağırlık) Ana Kutu olarak başa alır.
-    Ayrıca herhangi bir kutu 150 lbs veya inç limitlerini aşarsa ürünü LTL yapar.
-    """
     total_lbs = 0
     total_vol_ft3 = 0
     is_ltl = False
-    
     processed_cartons = []
     
     for c in cartons:
-        # Template'e yazılacak değerler bölgeye (US/EU) göre belirlenir
         lbs = round(c['kg'] * 2.20462, 2) if is_us else c['kg']
         x_in = round(c['x'] * 0.393701, 2) if is_us else c['x']
         y_in = round(c['y'] * 0.393701, 2) if is_us else c['y']
         z_in = round(c['z'] * 0.393701, 2) if is_us else c['z']
         
-        # Ancak LTL limit hesaplamaları daima INCH ve LBS üzerinden yapılmalıdır
         calc_lbs = round(c['kg'] * 2.20462, 2)
         calc_x = round(c['x'] * 0.393701, 2)
         calc_y = round(c['y'] * 0.393701, 2)
@@ -127,24 +100,19 @@ def get_product_logistics(cartons, is_us):
         total_vol_ft3 += vol_ft3
         total_lbs += calc_lbs
         
-        # Herhangi bir kutuda sınır aşımı var mı?
         if calc_lbs >= 150 or (length + girth) >= 165 or length >= 108:
             is_ltl = True
             
         processed_cartons.append({
-            'vol': vol_ft3,
-            'weight_lbs': calc_lbs,
+            'vol': vol_ft3, 'weight_lbs': calc_lbs,
             'kg': c['kg'], 'x': c['x'], 'y': c['y'], 'z': c['z'],
             'mapped_w': lbs, 'mapped_x': x_in, 'mapped_y': y_in, 'mapped_z': z_in
         })
         
-    # Zorunlu büyükten küçüğe sıralama (Hacim öncelikli)
     processed_cartons.sort(key=lambda c: (c['vol'], c['weight_lbs']), reverse=True)
-    
     ship_type = "LTL" if is_ltl else "Small Parcel"
     
-    if total_vol_ft3 == 0:
-        freight_class = "60"
+    if total_vol_ft3 == 0: freight_class = "60"
     else:
         dens = total_lbs / total_vol_ft3
         if dens < 1: freight_class = "400"
@@ -165,167 +133,98 @@ def extract_bedding_info(features, description, raw_h, raw_w):
     total_pieces = 0
     pillow_match = re.search(r'(?:pillowcase|pillow case|yastık kılıfı).*?(\d+)\s*(?:piece|adet|pcs)', text_lower)
     
-    if pillow_match: 
-        total_pieces += int(pillow_match.group(1))
-    elif 'pillowcase' in text_lower or 'yastık kılıfı' in text_lower: 
-        total_pieces += 1
+    if pillow_match: total_pieces += int(pillow_match.group(1))
+    elif 'pillowcase' in text_lower or 'yastık kılıfı' in text_lower: total_pieces += 1
         
-    if any(x in text_lower for x in ['duvet cover', 'quilt cover', 'nevresim']): 
-        total_pieces += 1
-    if any(x in text_lower for x in ['fitted sheet', 'çarşaf']): 
-        total_pieces += 1
-    if any(x in text_lower for x in ['flat sheet', 'düz çarşaf']): 
-        total_pieces += 1
-    if any(x in text_lower for x in ['bedspread', 'yatak örtüsü']): 
-        total_pieces += 1
-    if any(x in text_lower for x in ['comforter', 'yorgan']): 
-        total_pieces += 1
-    if any(x in text_lower for x in ['blanket', 'battaniye']): 
-        total_pieces += 1
+    if any(x in text_lower for x in ['duvet cover', 'quilt cover', 'nevresim']): total_pieces += 1
+    if any(x in text_lower for x in ['fitted sheet', 'çarşaf']): total_pieces += 1
+    if any(x in text_lower for x in ['flat sheet', 'düz çarşaf']): total_pieces += 1
+    if any(x in text_lower for x in ['bedspread', 'yatak örtüsü']): total_pieces += 1
+    if any(x in text_lower for x in ['comforter', 'yorgan']): total_pieces += 1
+    if any(x in text_lower for x in ['blanket', 'battaniye']): total_pieces += 1
         
     pieces_str = str(total_pieces) if total_pieces > 0 else ""
     
     set_single = ""
-    if total_pieces > 1: 
-        set_single = "Set (matching pieces included)"
-    elif total_pieces == 1: 
-        set_single = "Single Piece"
+    if total_pieces > 1: set_single = "Set (matching pieces included)"
+    elif total_pieces == 1: set_single = "Single Piece"
         
     material = ""
-    if 'cotton blend' in text_lower or ('cotton' in text_lower and 'polyester' in text_lower): 
-        material = "Cotton Blend"
-    elif 'cotton' in text_lower or 'pamuk' in text_lower: 
-        material = "Cotton"
-    elif 'microfiber' in text_lower or 'mikrofiber' in text_lower: 
-        material = "Microfiber"
-    elif 'polyester' in text_lower: 
-        material = "Polyester"
-    elif 'satin' in text_lower or 'saten' in text_lower: 
-        material = "Satin"
-    elif 'linen' in text_lower or 'keten' in text_lower: 
-        material = "Linen"
-    elif 'flannel' in text_lower or 'pazen' in text_lower: 
-        material = "Flannel"
-    elif 'silk' in text_lower or 'ipek' in text_lower: 
-        material = "Silk"
-    elif 'velvet' in text_lower or 'kadife' in text_lower: 
-        material = "Velour"
-    elif 'rayon' in text_lower or 'viskon' in text_lower: 
-        material = "Rayon"
+    if 'cotton blend' in text_lower or ('cotton' in text_lower and 'polyester' in text_lower): material = "Cotton Blend"
+    elif 'cotton' in text_lower or 'pamuk' in text_lower: material = "Cotton"
+    elif 'microfiber' in text_lower or 'mikrofiber' in text_lower: material = "Microfiber"
+    elif 'polyester' in text_lower: material = "Polyester"
+    elif 'satin' in text_lower or 'saten' in text_lower: material = "Satin"
+    elif 'linen' in text_lower or 'keten' in text_lower: material = "Linen"
+    elif 'flannel' in text_lower or 'pazen' in text_lower: material = "Flannel"
+    elif 'silk' in text_lower or 'ipek' in text_lower: material = "Silk"
+    elif 'velvet' in text_lower or 'kadife' in text_lower: material = "Velour"
+    elif 'rayon' in text_lower or 'viskon' in text_lower: material = "Rayon"
     
     prod_type = ""
     is_bedding = False
-    
     if 'duvet cover' in text_lower or 'nevresim' in text_lower or 'quilt cover' in text_lower: 
-        prod_type = "Duvet Cover"
-        is_bedding = True
+        prod_type = "Duvet Cover"; is_bedding = True
     elif 'bedspread' in text_lower or 'yatak örtüsü' in text_lower: 
-        prod_type = "Bedspread"
-        is_bedding = True
+        prod_type = "Bedspread"; is_bedding = True
     elif 'quilt' in text_lower: 
-        prod_type = "Quilt"
-        is_bedding = True
+        prod_type = "Quilt"; is_bedding = True
     elif 'comforter' in text_lower or 'yorgan' in text_lower: 
-        prod_type = "Comforter"
-        is_bedding = True
+        prod_type = "Comforter"; is_bedding = True
     elif 'coverlet' in text_lower: 
-        prod_type = "Coverlet"
-        is_bedding = True
+        prod_type = "Coverlet"; is_bedding = True
     elif 'pillowcase' in text_lower or 'yastık kılıfı' in text_lower or 'sham' in text_lower: 
         prod_type = "Sham"
         
     bed_size = ""
     max_dim = max(float(raw_h or 0), float(raw_w or 0))
-    
     if max_dim > 0 and (is_bedding or prod_type == "Sham"):
-        if max_dim >= 250: 
-            bed_size = "California King"
-        elif max_dim >= 230: 
-            bed_size = "King"
-        elif max_dim >= 200: 
-            bed_size = "Queen"
-        elif max_dim >= 180: 
-            bed_size = "Full / Double"
-        else: 
-            bed_size = "Twin"
+        if max_dim >= 250: bed_size = "California King"
+        elif max_dim >= 230: bed_size = "King"
+        elif max_dim >= 200: bed_size = "Queen"
+        elif max_dim >= 180: bed_size = "Full / Double"
+        else: bed_size = "Twin"
         
     new_name = str(description)
     new_name = re.sub(r'\s*\([A-Z]{2,3}\)\s*', ' ', new_name)
-    
-    size_words = [
-        r'\bSingle XXL\b', r'\bSingle XL\b', r'\bSingle\b', r'\bDouble\b', 
-        r'\bKing\b', r'\bSuper King\b', r'\bMega King\b', r'\bQueen\b', 
-        r'\bTwin\b', r'\bFull\b'
-    ]
-    for word in size_words: 
-        new_name = re.sub(word, '', new_name, flags=re.IGNORECASE)
-        
+    size_words = [r'\bSingle XXL\b', r'\bSingle XL\b', r'\bSingle\b', r'\bDouble\b', r'\bKing\b', r'\bSuper King\b', r'\bMega King\b', r'\bQueen\b', r'\bTwin\b', r'\bFull\b']
+    for word in size_words: new_name = re.sub(word, '', new_name, flags=re.IGNORECASE)
     new_name = re.sub(r'\s+', ' ', new_name).strip()
-    
-    if bed_size and prod_type != "Sham" and is_bedding: 
-        new_name = f"{bed_size} {new_name}"
+    if bed_size and prod_type != "Sham" and is_bedding: new_name = f"{bed_size} {new_name}"
         
-    return {
-        'pieces': pieces_str, 
-        'set_single': set_single, 
-        'material': material, 
-        'prod_type': prod_type, 
-        'bed_size': bed_size, 
-        'new_name': new_name
-    }
+    return {'pieces': pieces_str, 'set_single': set_single, 'material': material, 'prod_type': prod_type, 'bed_size': bed_size, 'new_name': new_name}
 
 def generate_bedding_note(text, h_val, w_val, bed_size, is_us):
-    if not is_us or not text: 
-        return ""
-        
+    if not is_us or not text: return ""
     text_lower = str(text).lower()
     is_bedding = any(k in text_lower for k in ['duvet', 'quilt', 'bedspread', 'nevresim', 'yorgan', 'yatak örtüsü', 'comforter', 'coverlet'])
     is_pillow = any(k in text_lower for k in ['pillowcase', 'yastık kılıfı', 'sham'])
 
-    if not (is_bedding or is_pillow): 
-        return ""
+    if not (is_bedding or is_pillow): return ""
 
     h_in = round(float(h_val) * 0.393701, 2) if h_val else ""
     w_in = round(float(w_val) * 0.393701, 2) if w_val else ""
     dims_str = f"{h_in} x {w_in}" if h_in and w_in else f"{h_in or w_in}"
     
-    if is_bedding and bed_size: 
-        return f"This beautiful set is crafted to European standards. Measuring {dims_str} inches, it beautifully complements your {bed_size} bed, offering a cozy and elegant drape."
-    elif is_pillow: 
-        return f"Crafted in Türkiye, these pillowcases measure {dims_str} inches. They are a wonderful fit for standard US pillows, bringing a touch of European comfort to your bedroom."
-        
+    if is_bedding and bed_size: return f"This beautiful set is crafted to European standards. Measuring {dims_str} inches, it beautifully complements your {bed_size} bed, offering a cozy and elegant drape."
+    elif is_pillow: return f"Crafted in Türkiye, these pillowcases measure {dims_str} inches. They are a wonderful fit for standard US pillows, bringing a touch of European comfort to your bedroom."
     return ""
 
 def get_brand_by_category(category_text):
-    if pd.isna(category_text) or not str(category_text).strip():
-        return ""
-        
+    if pd.isna(category_text) or not str(category_text).strip(): return ""
     cat_lower = str(category_text).lower()
-    
-    if "sofa" in cat_lower or "koltuk" in cat_lower or "kanepe" in cat_lower: 
-        return "Hanah Home"
-    elif "wall deco" in cat_lower or "duvar" in cat_lower or "tablo" in cat_lower: 
-        return "Wallity"
-    elif "rug" in cat_lower or "carpet" in cat_lower or "halı" in cat_lower or "kilim" in cat_lower: 
-        return "Conceptum Hypnose"
-    elif "kitchen" in cat_lower or "mutfak" in cat_lower: 
-        return "Hermia Concept"
-    elif "lighting" in cat_lower or "aydınlatma" in cat_lower or "avize" in cat_lower or "lamba" in cat_lower: 
-        return "Opviq"
-    elif "furniture" in cat_lower or "mobilya" in cat_lower: 
-        return "Skye Decor"
-    elif "bathroom" in cat_lower or "banyo" in cat_lower: 
-        return "Mijölnir"
-    elif "bedroom" in cat_lower or "yatak odası" in cat_lower: 
-        return "L'Essentiel Linge de Maison"
-    elif "decoration" in cat_lower or "dekorasyon" in cat_lower or "aksesuar" in cat_lower: 
-        return "Evila Originals"
-        
+    if "sofa" in cat_lower or "koltuk" in cat_lower or "kanepe" in cat_lower: return "Hanah Home"
+    elif "wall deco" in cat_lower or "duvar" in cat_lower or "tablo" in cat_lower: return "Wallity"
+    elif "rug" in cat_lower or "carpet" in cat_lower or "halı" in cat_lower or "kilim" in cat_lower: return "Conceptum Hypnose"
+    elif "kitchen" in cat_lower or "mutfak" in cat_lower: return "Hermia Concept"
+    elif "lighting" in cat_lower or "aydınlatma" in cat_lower or "avize" in cat_lower or "lamba" in cat_lower: return "Opviq"
+    elif "furniture" in cat_lower or "mobilya" in cat_lower: return "Skye Decor"
+    elif "bathroom" in cat_lower or "banyo" in cat_lower: return "Mijölnir"
+    elif "bedroom" in cat_lower or "yatak odası" in cat_lower: return "L'Essentiel Linge de Maison"
+    elif "decoration" in cat_lower or "dekorasyon" in cat_lower or "aksesuar" in cat_lower: return "Evila Originals"
     return ""
 
-
-# --- 3. ANA İŞLEME MOTORU (WAYFAIR ŞABLONU İÇİN) ---
-
+# --- 3. ANA İŞLEME MOTORU ---
 def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, marketing_file=None, progress_callback=None):
     data_file.seek(0)
     template_file.seek(0)
@@ -334,25 +233,19 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
     if 'CODE' in df_data.columns:
         df_data = df_data.dropna(subset=['CODE'])
         df_data = df_data[df_data['CODE'].astype(str).str.strip() != '']
-    else: 
-        df_data = df_data.dropna(how='all')
-        
+    else: df_data = df_data.dropna(how='all')
     df_data = df_data.reset_index(drop=True)
     
     cat_col_name = next((col for col in df_data.columns if 'categor' in str(col).lower() or 'kategori' in str(col).lower()), None)
     
-    # Koli / Paket verilerini hazırlama
     carton_dict = {}
     if carton_file is not None:
         carton_file.seek(0)
         df_carton = pd.read_excel(carton_file)
-        
         def find_col(df, keywords):
             for col in df.columns:
-                if all(kw in str(col).lower() for kw in keywords): 
-                    return col
+                if all(kw in str(col).lower() for kw in keywords): return col
             return None
-            
         c_code_col = find_col(df_carton, ['code']) or find_col(df_carton, ['sku'])
         c_w_col = find_col(df_carton, ['weight'])
         c_x_col = find_col(df_carton, ['size', 'x'])
@@ -363,19 +256,15 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
             for _, r in df_carton.iterrows():
                 c_sku = str(r[c_code_col]).strip()
                 if c_sku and c_sku.lower() != 'nan':
-                    if c_sku not in carton_dict: 
-                        carton_dict[c_sku] = []
+                    if c_sku not in carton_dict: carton_dict[c_sku] = []
                     try:
                         w_val = float(r[c_w_col]) if c_w_col and pd.notna(r[c_w_col]) else 0
                         x_val = float(r[c_x_col]) if c_x_col and pd.notna(r[c_x_col]) else 0
                         y_val = float(r[c_y_col]) if c_y_col and pd.notna(r[c_y_col]) else 0
                         z_val = float(r[c_z_col]) if c_z_col and pd.notna(r[c_z_col]) else 0
-                    except: 
-                        w_val, x_val, y_val, z_val = 0, 0, 0, 0
-                        
+                    except: w_val, x_val, y_val, z_val = 0, 0, 0, 0
                     carton_dict[c_sku].append({'kg': w_val, 'x': x_val, 'y': y_val, 'z': z_val})
 
-    # Marketing Copy Verilerini Çekme (Opsiyonel)
     marketing_dict = {}
     missing_marketing_skus = set()
     if marketing_file is not None:
@@ -394,58 +283,41 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
     target_sheet = next((s for s in wb.sheetnames if not any(x in s for x in ["Additional", "WAYFAIR", "Instructions", "Valid Values", "Failed"])), wb.sheetnames[0])
     ws_main = wb[target_sheet]
 
-    # Şablon Kolon Eşleştirmeleri
     col_map = {}
     for c in range(1, ws_main.max_column + 1):
         r1_val = str(ws_main.cell(row=1, column=c).value).strip() if ws_main.cell(row=1, column=c).value else ""
         r4_val = str(ws_main.cell(row=4, column=c).value).strip() if ws_main.cell(row=4, column=c).value else ""
         col_let = ws_main.cell(row=1, column=c).column_letter
         
-        if r1_val: 
-            col_map[r1_val] = col_let
-            
-        r4_lower = r4_val.lower()
-        r1_lower = r1_val.lower()
+        if r1_val: col_map[r1_val] = col_let
+        r4_lower = r4_val.lower(); r1_lower = r1_val.lower()
 
         if ('color' in r4_lower or 'colour' in r4_lower or r1_lower.endswith('::color')):
-            if 'leg' not in r4_lower and 'base' not in r4_lower and 'shade' not in r4_lower: 
-                col_map['featureDescription::color'] = col_let
+            if 'leg' not in r4_lower and 'base' not in r4_lower and 'shade' not in r4_lower: col_map['featureDescription::color'] = col_let
                 
         if 'overall height' in r4_lower or 'overallheight' in r1_lower: col_map['featureDescription::overallHeight'] = col_let
         elif 'overall width' in r4_lower or 'overallwidth' in r1_lower: col_map['featureDescription::overallWidth'] = col_let
         elif 'overall depth' in r4_lower or 'overalldepth' in r1_lower: col_map['featureDescription::overallDepth'] = col_let
         elif 'overall product weight' in r4_lower or 'overallproductweight' in r1_lower: col_map['featureDescription::overallProductWeight'] = col_let
-        
         if 'marketing copy' in r4_lower or 'marketingcopy' in r1_lower: col_map['featureDescription::marketingCopy'] = col_let
         if 'romance copy' in r4_lower or 'romancecopy' in r1_lower: col_map['featureDescription::romanceCopy'] = col_let
-            
         if 'set / single' in r4_lower: col_map['bedding::setSingle'] = col_let
         if 'bedding product type' in r4_lower: col_map['bedding::productType'] = col_let
         if 'bedding size' in r4_lower: col_map['bedding::size'] = col_let
         if 'bedding material' in r4_lower: col_map['bedding::material'] = col_let
         if 'pieces included' in r4_lower or 'total number of pieces included' in r4_lower: col_map['bedding::pieces'] = col_let
-
         for i in range(1, 6):
-            if f'image file name or url {i}' in r4_lower: 
-                col_map[f'img_{i}'] = col_let
+            if f'image file name or url {i}' in r4_lower: col_map[f'img_{i}'] = col_let
 
     feature_cols = [c.column_letter for c in ws_main[1] if str(c.value).strip() == 'featureDescription::genericFeatures']
     
     total_rows = len(df_data)
-    processed = 0
-    skipped = []
-    errors = []
-    missing_cols_reported = False
-    written_rows = []
-    additional_images_data = []
-    additional_cartons_data = []
-    processed_skus_for_additional = set()
-    processed_skus_for_cartons = set()
+    processed = 0; skipped = []; errors = []; written_rows = []; additional_images_data = []; additional_cartons_data = []
+    missing_cols_reported = False; processed_skus_for_additional = set(); processed_skus_for_cartons = set()
 
     for index, row in df_data.iterrows():
         g_satir = 8 + index
-        if progress_callback: 
-            progress_callback((index + 1) / total_rows)
+        if progress_callback: progress_callback((index + 1) / total_rows)
             
         sku_key = str(row.get('CODE', '')).strip()
         try: pkg_count = int(float(row.get('NUMBER OF PACKAGES', 1)))
@@ -457,8 +329,8 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
         z_cm = float(row.get('PACKAGING SIZE - Z (cm)', 0) or 0)
         
         leave_carton_blank = False 
-
         raw_cartons = []
+        
         if carton_file is not None and sku_key in carton_dict and len(carton_dict[sku_key]) > 0:
             raw_cartons = carton_dict[sku_key]
         elif pkg_count > 1:
@@ -466,17 +338,10 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
         else:
             raw_cartons = [{'kg': kg, 'x': x_cm, 'y': y_cm, 'z': z_cm}]
 
-        # Product Weight Hesaplaması ve Eşleştirmesi (Overall Product Weight de buradan faydalanacak)
         if carton_file is not None and sku_key in carton_dict and len(carton_dict[sku_key]) > 0:
-            if ui_data['is_us']:
-                prod_weight_val = max(0.0, round((sum(c['kg'] for c in raw_cartons) * 2.20462) - 5, 2))
-            else:
-                prod_weight_val = max(0.0, round(sum(c['kg'] for c in raw_cartons) - 2.5, 2))
+            prod_weight_val = max(0.0, round((sum(c['kg'] for c in raw_cartons) * 2.20462) - 5, 2)) if ui_data['is_us'] else max(0.0, round(sum(c['kg'] for c in raw_cartons) - 2.5, 2))
         else:
-            if ui_data['is_us']:
-                prod_weight_val = round((kg - 0.1) * 2.20462, 2) if kg > 0.1 else 0.0
-            else:
-                prod_weight_val = round(kg - 0.1, 2) if kg > 0.1 else 0.0
+            prod_weight_val = round((kg - 0.1) * 2.20462, 2) if (ui_data['is_us'] and kg > 0.1) else (round(kg - 0.1, 2) if kg > 0.1 else 0.0)
 
         try:
             feat_text = row.get('FEATURES', '')
@@ -494,41 +359,26 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
             auto_brand = get_brand_by_category(cat_val)
 
             mappings = {
-                'core::supplierPartNumber': sku_key, 
-                'core::manufacturerPartNumber': sku_key, 
-                'core::universalProductCode': ean_str,
+                'core::supplierPartNumber': sku_key, 'core::manufacturerPartNumber': sku_key, 'core::universalProductCode': ean_str,
                 'core::productName': b_info['new_name'] if b_info['new_name'] else row.get('DESCRIPTION'),
-                'price::wholesalePrice': row.get('PRICE'), 
-                'price::manufacturerSuggestedRetailPrice': row.get('RETAIL PRICE'),
+                'price::wholesalePrice': row.get('PRICE'), 'price::manufacturerSuggestedRetailPrice': row.get('RETAIL PRICE'),
                 'featureDescription::overallHeight': convert_to_inch(raw_h) if ui_data['is_us'] else raw_h,
                 'featureDescription::overallWidth': convert_to_inch(raw_w) if ui_data['is_us'] else raw_w,
                 'featureDescription::overallDepth': convert_to_inch(raw_d) if ui_data['is_us'] else raw_d,
-                'featureDescription::color': color_val, 
-                'core::manufacturerId': auto_brand, 
-                'shippingAndFulfillment::minimumOrderQuantity': 1, 
-                'shippingAndFulfillment::forceQuantityMultiplier': 1, 
-                'shippingAndFulfillment::displaySetQuantity': 1,
-                'bedding::setSingle': b_info['set_single'], 
-                'bedding::productType': b_info['prod_type'], 
-                'bedding::size': b_info['bed_size'],
-                'bedding::material': b_info['material'], 
-                'bedding::pieces': b_info['pieces']
+                'featureDescription::color': color_val, 'core::manufacturerId': auto_brand, 
+                'shippingAndFulfillment::minimumOrderQuantity': 1, 'shippingAndFulfillment::forceQuantityMultiplier': 1, 
+                'shippingAndFulfillment::displaySetQuantity': 1, 'bedding::setSingle': b_info['set_single'], 
+                'bedding::productType': b_info['prod_type'], 'bedding::size': b_info['bed_size'],
+                'bedding::material': b_info['material'], 'bedding::pieces': b_info['pieces'],
+                'shippingAndFulfillment::productWeight': prod_weight_val, 'featureDescription::overallProductWeight': prod_weight_val
             }
             
-            # Ürün bazlı weight ataması ve Overall weight'e bire bir yazılması
-            mappings['shippingAndFulfillment::productWeight'] = prod_weight_val
-            mappings['featureDescription::overallProductWeight'] = prod_weight_val
-
-            # Koli hesaplamaları (LTL ve Kutu Dizilimi)
             if leave_carton_blank or not raw_cartons:
-                mappings['shippingAndFulfillment::weight'] = ""
-                mappings['shippingAndFulfillment::height'] = ""
-                mappings['shippingAndFulfillment::width'] = ""
-                mappings['shippingAndFulfillment::depth'] = ""
+                mappings['shippingAndFulfillment::weight'] = ""; mappings['shippingAndFulfillment::height'] = ""
+                mappings['shippingAndFulfillment::width'] = ""; mappings['shippingAndFulfillment::depth'] = ""
             else:
                 ship_type, freight_class, processed_cartons = get_product_logistics(raw_cartons, ui_data['is_us'])
                 main_c = processed_cartons[0]
-                
                 mappings['shippingAndFulfillment::weight'] = main_c['mapped_w']
                 mappings['shippingAndFulfillment::height'] = main_c['mapped_x']
                 mappings['shippingAndFulfillment::width'] = main_c['mapped_y']
@@ -540,37 +390,26 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
                     
                 if len(processed_cartons) > 1 and sku_key not in processed_skus_for_cartons:
                     for ext_c in processed_cartons[1:]: 
-                        additional_cartons_data.append({
-                            'sku': sku_key, 
-                            'kg': ext_c['kg'], 'x': ext_c['x'], 'y': ext_c['y'], 'z': ext_c['z']
-                        })
+                        additional_cartons_data.append({'sku': sku_key, 'kg': ext_c['kg'], 'x': ext_c['x'], 'y': ext_c['y'], 'z': ext_c['z']})
                     processed_skus_for_cartons.add(sku_key)
 
-            # Marketing Copy eşleştirilmesi
             if marketing_file is not None:
                 if sku_key in marketing_dict:
                     mappings['featureDescription::marketingCopy'] = marketing_dict[sku_key]
                     mappings['featureDescription::romanceCopy'] = marketing_dict[sku_key]
-                else:
-                    missing_marketing_skus.add(sku_key)
+                else: missing_marketing_skus.add(sku_key)
 
-            # Resim bağlantıları URL ayıklama
             urls = []
             for col in df_data.columns:
                 col_str = str(col).lower()
                 if 'image' in col_str or 'resim' in col_str or 'url' in col_str or 'link' in col_str:
-                    if 'number' in col_str or 'sayı' in col_str or 'adet' in col_str: 
-                        continue
+                    if 'number' in col_str or 'sayı' in col_str or 'adet' in col_str: continue
                     val = str(row.get(col, '')).strip()
-                    if val and val.lower() != 'nan' and (val.startswith('http') or val.startswith('www')) and val not in urls: 
-                        urls.append(val)
+                    if val and val.lower() != 'nan' and (val.startswith('http') or val.startswith('www')) and val not in urls: urls.append(val)
 
-            for i in range(min(5, len(urls))): 
-                mappings[f'img_{i+1}'] = urls[i]
-                
+            for i in range(min(5, len(urls))): mappings[f'img_{i+1}'] = urls[i]
             if len(urls) > 5 and sku_key not in processed_skus_for_additional:
-                for ext_url in urls[5:]: 
-                    additional_images_data.append((sku_key, ext_url))
+                for ext_url in urls[5:]: additional_images_data.append((sku_key, ext_url))
                 processed_skus_for_additional.add(sku_key)
 
             if ui_data['is_us']:
@@ -579,94 +418,67 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
 
             if not missing_cols_reported:
                 missing = validate_column_mappings(col_map, mappings)
-                if missing: 
-                    ui_data['missing_cols'] = missing
+                if missing: ui_data['missing_cols'] = missing
                 missing_cols_reported = True
 
-            # Dinamik UI verileri ve özel/kombine seçimler
             for wid, val in ui_data['dyn_drops'].items():
                 if wid in col_map and val:
-                    if isinstance(val, list):
-                        final_str = "; ".join([str(pv) for pv in val if pv and str(pv) != 'None']) 
-                    else:
-                        final_str = str(val)
-                    if final_str: 
-                        ws_main[f"{col_map[wid]}{g_satir}"] = final_str
+                    final_str = "; ".join([str(pv) for pv in val if pv and str(pv) != 'None']) if isinstance(val, list) else str(val)
+                    if final_str: ws_main[f"{col_map[wid]}{g_satir}"] = final_str
 
             for k, v in mappings.items():
-                if k in col_map and pd.notna(v) and str(v).strip() != '': 
-                    ws_main[f"{col_map[k]}{g_satir}"] = v
+                if k in col_map and pd.notna(v) and str(v).strip() != '': ws_main[f"{col_map[k]}{g_satir}"] = v
 
-            dim_writes = {
-                'h': convert_to_inch(raw_h) if ui_data['is_us'] else raw_h, 
-                'w': convert_to_inch(raw_w) if ui_data['is_us'] else raw_w, 
-                'd': convert_to_inch(raw_d) if ui_data['is_us'] else raw_d
-            }
-            
+            dim_writes = {'h': convert_to_inch(raw_h) if ui_data['is_us'] else raw_h, 'w': convert_to_inch(raw_w) if ui_data['is_us'] else raw_w, 'd': convert_to_inch(raw_d) if ui_data['is_us'] else raw_d}
             for dim_type, wids in ui_data['dim_mappings'].items():
                 val = dim_writes[dim_type]
                 if val is not None:
                     for wid in wids:
-                        if wid in col_map: 
-                            ws_main[f"{col_map[wid]}{g_satir}"] = val
+                        if wid in col_map: ws_main[f"{col_map[wid]}{g_satir}"] = val
 
             satirlar = [s.strip() for s in translate_features(feat_text, ui_data['is_us']).split('\n') if s.strip()]
             bedding_note = generate_bedding_note(feat_text, raw_h, raw_w, b_info['bed_size'], ui_data['is_us'])
-            if bedding_note:
-                satirlar.append(bedding_note)
+            if bedding_note: satirlar.append(bedding_note)
                 
             final_feats = ["", "", "", "", ""]
             n = len(satirlar)
-            
-            if n == 0:
-                final_feats[0] = "Made In Türkiye"
+            if n == 0: final_feats[0] = "Made In Türkiye"
             elif n <= 4:
-                for idx in range(n):
-                    final_feats[idx] = satirlar[idx]
+                for idx in range(n): final_feats[idx] = satirlar[idx]
                 final_feats[n] = "Made In Türkiye"
             else:
-                for idx in range(4):
-                    final_feats[idx] = satirlar[idx]
+                for idx in range(4): final_feats[idx] = satirlar[idx]
                 remaining_text = " | ".join(satirlar[4:])
                 final_feats[4] = f"{remaining_text} | Made In Türkiye"
             
             for i, col_let in enumerate(feature_cols):
-                if i < 5:
-                    ws_main[f"{col_let}{g_satir}"] = final_feats[i]
+                if i < 5: ws_main[f"{col_let}{g_satir}"] = final_feats[i]
                     
             processed += 1
             written_rows.append(g_satir)
             
         except Exception as e: 
-            errors.append({
-                'Satır': index + 2, 'Ürün Kodu': sku_key, 
-                'Açıklama': str(row.get('DESCRIPTION', '') or '')[:60], 'Hata Detayı': str(e)
-            })
+            errors.append({'Satır': index + 2, 'Ürün Kodu': sku_key, 'Açıklama': str(row.get('DESCRIPTION', '') or '')[:60], 'Hata Detayı': str(e)})
 
     yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
     for c in range(1, ws_main.max_column + 1):
         if str(ws_main.cell(row=3, column=c).value).strip().lower() == "required":
             for r in written_rows:
                 cell = ws_main.cell(row=r, column=c)
-                if cell.value is None or str(cell.value).strip() == "": 
-                    cell.fill = yellow_fill
+                if cell.value is None or str(cell.value).strip() == "": cell.fill = yellow_fill
 
-    # Ek paket ve görsellerin işlenmesi
     if additional_images_data:
         add_sheet = next((wb[s] for s in wb.sheetnames if 'additional' in s.lower() and 'image' in s.lower()), None)
         if add_sheet:
             sku_col_let, url_col_let, start_row = 'A', 'B', 5
             for c in range(1, add_sheet.max_column + 1):
-                r1 = str(add_sheet.cell(row=1, column=c).value).lower()
-                r4 = str(add_sheet.cell(row=4, column=c).value).lower()
+                r1, r4 = str(add_sheet.cell(row=1, column=c).value).lower(), str(add_sheet.cell(row=4, column=c).value).lower()
                 if 'supplier part number' in r4 or 'sku' in r4 or 'part number' in r1: sku_col_let = add_sheet.cell(row=1, column=c).column_letter
                 if 'image file name or url' in r4 or 'url' in r4 or 'media::' in r1: url_col_let = add_sheet.cell(row=1, column=c).column_letter
-                    
             for r in range(4, add_sheet.max_row + 10):
                 if not add_sheet[f"{sku_col_let}{r}"].value:
                     start_row = r
                     break
-                    
             for sku, url in additional_images_data:
                 add_sheet[f"{sku_col_let}{start_row}"] = sku
                 add_sheet[f"{url_col_let}{start_row}"] = url
@@ -683,20 +495,17 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
                 elif 'height' in r4 or 'height' in r1: col_map_c['height'] = let
                 elif 'width' in r4 or 'width' in r1: col_map_c['width'] = let
                 elif 'depth' in r4 or 'depth' in r1: col_map_c['depth'] = let
-                    
             if 'sku' in col_map_c:
                 start_row = 5
                 for r in range(4, add_carton_sheet.max_row + 10):
                     if not add_carton_sheet[f"{col_map_c['sku']}{r}"].value:
                         start_row = r
                         break
-                        
                 for c_data in additional_cartons_data:
                     c_w_final = round(c_data['kg'] * 2.20462, 2) if ui_data['is_us'] else c_data['kg']
                     c_h_final = round(c_data['x'] * 0.393701, 2) if ui_data['is_us'] else c_data['x']
                     c_w_final_2 = round(c_data['y'] * 0.393701, 2) if ui_data['is_us'] else c_data['y']
                     c_d_final = round(c_data['z'] * 0.393701, 2) if ui_data['is_us'] else c_data['z']
-                    
                     add_carton_sheet[f"{col_map_c['sku']}{start_row}"] = c_data['sku']
                     if 'weight' in col_map_c: add_carton_sheet[f"{col_map_c['weight']}{start_row}"] = c_w_final
                     if 'height' in col_map_c: add_carton_sheet[f"{col_map_c['height']}{start_row}"] = c_h_final
@@ -709,46 +518,35 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
     return output.getvalue(), processed, skipped, errors, list(missing_marketing_skus)
 
 
-# --- YENİ: SADECE DATA EXCEL'İ DÖNÜŞTÜREN MOTOR ---
-
 def process_data_excel_only(data_file, is_us):
     data_file.seek(0)
     wb = openpyxl.load_workbook(data_file)
     ws = wb.active
 
-    if hasattr(ws, '_images'):
-        ws._images = []
+    if hasattr(ws, '_images'): ws._images = []
 
     def get_headers():
         h = {}
         for c in range(1, ws.max_column + 1):
             v = ws.cell(row=1, column=c).value
-            if v: 
-                h[str(v).strip()] = c
+            if v: h[str(v).strip()] = c
         return h
 
     headers = get_headers()
-
     code_col = headers.get('CODE')
     if code_col:
         for row in range(ws.max_row, 1, -1):
             val = ws.cell(row=row, column=code_col).value
-            if val is None or str(val).strip() == '':
-                ws.delete_rows(row, 1)
+            if val is None or str(val).strip() == '': ws.delete_rows(row, 1)
                 
     headers = get_headers()
-
     ean_col = headers.get('EAN CODE')
     if ean_col:
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=ean_col)
             if cell.value is not None:
-                try:
-                    cell.value = int(float(str(cell.value).strip()))
-                    cell.number_format = '0'
-                except:
-                    cell.value = str(cell.value).strip()
-                    cell.number_format = '@'
+                try: cell.value = int(float(str(cell.value).strip())); cell.number_format = '0'
+                except: cell.value = str(cell.value).strip(); cell.number_format = '@'
 
     color_col = headers.get('COLOR')
     if color_col:
@@ -765,8 +563,7 @@ def process_data_excel_only(data_file, is_us):
     if ef_col:
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=ef_col)
-            if cell.value:
-                cell.value = translate_features(str(cell.value), is_us)
+            if cell.value: cell.value = translate_features(str(cell.value), is_us)
 
     feat_col = headers.get('FEATURES')
     if feat_col:
@@ -780,16 +577,11 @@ def process_data_excel_only(data_file, is_us):
             target_col_letter = get_column_letter(target_col_idx)
             nc = ws.cell(row=1, column=target_col_idx)
             nc.value = f_name
-            
-            if ref_width:
-                ws.column_dimensions[target_col_letter].width = ref_width
+            if ref_width: ws.column_dimensions[target_col_letter].width = ref_width
             if ref_header.has_style:
-                nc.font = copy.copy(ref_header.font)
-                nc.border = copy.copy(ref_header.border)
-                nc.fill = copy.copy(ref_header.fill)
-                nc.alignment = copy.copy(ref_header.alignment)
+                nc.font = copy.copy(ref_header.font); nc.border = copy.copy(ref_header.border)
+                nc.fill = copy.copy(ref_header.fill); nc.alignment = copy.copy(ref_header.alignment)
 
-        # Made In Türkiye Kuralları (Sadece Data Excel'i İçin)
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=feat_col)
             features_to_write = ["", "", "", "", ""]
@@ -797,21 +589,16 @@ def process_data_excel_only(data_file, is_us):
             if cell.value:
                 translated = translate_features(str(cell.value), is_us)
                 lines = [s.strip() for s in translated.split('\n') if s.strip()]
-                
                 n = len(lines)
-                if n == 0:
-                    features_to_write[0] = "Made In Türkiye"
+                if n == 0: features_to_write[0] = "Made In Türkiye"
                 elif n <= 4:
-                    for idx in range(n):
-                        features_to_write[idx] = lines[idx]
+                    for idx in range(n): features_to_write[idx] = lines[idx]
                     features_to_write[n] = "Made In Türkiye"
                 else:
-                    for idx in range(4):
-                        features_to_write[idx] = lines[idx]
+                    for idx in range(4): features_to_write[idx] = lines[idx]
                     remaining_text = " | ".join(lines[4:])
                     features_to_write[4] = f"{remaining_text} | Made In Türkiye"
-            else:
-                features_to_write[0] = "Made In Türkiye"
+            else: features_to_write[0] = "Made In Türkiye"
 
             ws.cell(row=row, column=feat_col + 1).value = features_to_write[0]
             ws.cell(row=row, column=feat_col + 2).value = features_to_write[1]
@@ -821,16 +608,13 @@ def process_data_excel_only(data_file, is_us):
 
     if is_us:
         headers = get_headers()
-        w_col = headers.get('WEIGHT (Kg)')
-        x_col = headers.get('PACKAGING SIZE - X (cm)')
-        y_col = headers.get('PACKAGING SIZE - Y (cm)')
-        z_col = headers.get('PACKAGING SIZE - Z (cm)')
+        w_col = headers.get('WEIGHT (Kg)'); x_col = headers.get('PACKAGING SIZE - X (cm)')
+        y_col = headers.get('PACKAGING SIZE - Y (cm)'); z_col = headers.get('PACKAGING SIZE - Z (cm)')
         
         metric_cols = [c for c in [w_col, x_col, y_col, z_col] if c is not None]
         if metric_cols:
             insert_idx = max(metric_cols) + 1
             ws.insert_cols(insert_idx, 4)
-            
             ws.cell(row=1, column=insert_idx).value = 'WEIGHT (Lbs)'
             ws.cell(row=1, column=insert_idx + 1).value = 'PACKAGING SIZE - X (in)'
             ws.cell(row=1, column=insert_idx + 2).value = 'PACKAGING SIZE - Y (in)'
@@ -840,10 +624,8 @@ def process_data_excel_only(data_file, is_us):
             for i in range(4):
                 nh = ws.cell(row=1, column=insert_idx + i)
                 if ref_h.has_style:
-                    nh.font = copy.copy(ref_h.font)
-                    nh.border = copy.copy(ref_h.border)
-                    nh.fill = copy.copy(ref_h.fill)
-                    nh.alignment = copy.copy(ref_h.alignment)
+                    nh.font = copy.copy(ref_h.font); nh.border = copy.copy(ref_h.border)
+                    nh.fill = copy.copy(ref_h.fill); nh.alignment = copy.copy(ref_h.alignment)
                     
             for row in range(2, ws.max_row + 1):
                 if w_col:
@@ -874,12 +656,10 @@ def process_data_excel_only(data_file, is_us):
     if img_cols:
         img_cols.sort(key=lambda x: x[0], reverse=True)
         extracted_cols = []
-        
         for col_idx, col_name in img_cols:
             col_data = []
             col_letter = get_column_letter(col_idx)
             col_width = ws.column_dimensions[col_letter].width
-
             for row in range(1, ws.max_row + 1):
                 cell = ws.cell(row=row, column=col_idx)
                 cell_data = {
@@ -895,14 +675,10 @@ def process_data_excel_only(data_file, is_us):
             ws.delete_cols(col_idx, 1)
             
         extracted_cols.reverse()
-        
         for col_dict in extracted_cols:
             new_col_idx = ws.max_column + 1
             new_col_letter = get_column_letter(new_col_idx)
-            
-            if col_dict['width']:
-                ws.column_dimensions[new_col_letter].width = col_dict['width']
-                
+            if col_dict['width']: ws.column_dimensions[new_col_letter].width = col_dict['width']
             for row_idx, c_data in enumerate(col_dict['data'], start=1):
                 new_cell = ws.cell(row=row_idx, column=new_col_idx)
                 new_cell.value = c_data['value']
@@ -933,9 +709,7 @@ def process_data_excel_only(data_file, is_us):
         for row in range(1, ws.max_row + 1):
             cell = ws.cell(row=row, column=col_idx)
             cell.border = medium_border
-            
-            if row == 1:
-                cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            if row == 1: cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             else:
                 cell.alignment = Alignment(horizontal='justify', vertical='center', wrap_text=True)
                 is_bold = cell.font.bold if (cell.font and cell.font.bold is not None) else False
@@ -943,8 +717,7 @@ def process_data_excel_only(data_file, is_us):
                 cell.font = Font(name='Tahoma', size=8, bold=is_bold, italic=is_italic)
                 if col_fill: cell.fill = col_fill
 
-    for row in range(1, ws.max_row + 1):
-        ws.row_dimensions[row].height = 18
+    for row in range(1, ws.max_row + 1): ws.row_dimensions[row].height = 18
 
     output = io.BytesIO()
     wb.save(output)
@@ -1043,11 +816,13 @@ with tab_wayfair:
         }
 
         st.markdown("---")
-        st.subheader(f"📋 {target_name} — Diğer Özellikler (Seçim veya Özel Giriş)")
+        st.subheader(f"📋 {target_name} — Özellik Eşleştirmeleri")
+        st.info("💡 Sistem, yüklediğiniz şablondaki 'Valid Values' (Geçerli Değerler) sekmesini otomatik okur ve Wayfair'in resmi olarak kabul ettiği seçenekleri listeler.")
         
-        if not HAS_TAGS:
-            st.info("💡 Dropdown'a dışarıdan kelime yazıp 'Enter' ile ekleyebilmek için terminal/komut satırına `pip install streamlit-tags` yazarak küçük bir eklenti kurmanız önerilir. (Sunucuda kullanıyorsanız requirements.txt dosyasına ekleyin). Aksi halde standart liste çalışır.")
-            
+        # SİHİRLİ KUTU - Genel Özel Değer Ekleme
+        global_custom_vals = st.text_input("✨ Açılır Listelerde Bulamadığınız Özel Bir Değer mi Var? (Buraya yazın, aşağıdaki tüm listelere eklensin)", placeholder="Örn: My Custom Value, Başka Bir Değer")
+        custom_opts_list = [x.strip() for x in global_custom_vals.split(',') if x.strip()]
+
         dyn_selections = {}
         cols_ui = st.columns(3)
         idx = 0
@@ -1057,15 +832,21 @@ with tab_wayfair:
                 continue
                 
             with cols_ui[idx % 3]:
+                # Valid Values tablosundan verileri çek
                 if df_v is not None and fname in df_v.columns:
                     opts = list(dict.fromkeys([str(o).strip() for o in df_v[fname].dropna().unique() if str(o).strip() and str(o).strip() != 'None']))
                 else: 
                     opts = ["Yes", "No", "Does Not Apply"]
 
+                # Kullanıcının eklediği özel değerleri (custom_opts_list) en başa ekle
+                for co in reversed(custom_opts_list):
+                    if co not in opts:
+                        opts.insert(0, co)
+
                 f_low = fname.lower()
                 def_val = []
                 
-                # Country of Origin için tek ve güçlü bir kural
+                # Sadece Country of Origin için zorunlu 'Turkey' seçimini getir
                 if 'country of manufacturer' in f_low or 'country of origin' in f_low: 
                     if 'Turkey' in opts: def_val = ['Turkey']
                     elif 'Türkiye' in opts: def_val = ['Türkiye']
@@ -1073,42 +854,20 @@ with tab_wayfair:
                         opts.insert(0, 'Turkey')
                         def_val = ['Turkey']
                 else:
+                    # Diğerleri artık BOMBOŞ gelecek (Select All karmaşasını önlemek için)
                     if wid not in st.session_state['user_prefs']:
-                        if 'warning required' in f_low: def_val = ['No']
-                        elif 'uniform packaging and labeling regulations' in f_low: def_val = ['Yes']
-                        elif 'reason for restriction' in f_low: def_val = ['Does Not Apply']
-                        elif 'general certificate of conformity' in f_low: def_val = ['Yes']
-                        elif 'canada product restriction' in f_low: def_val = ['No']
-                        elif 'soffa compliant' in f_low: def_val = ['Does Not Apply']
-                        elif 'canfer compliant' in f_low: def_val = ['Does Not Apply']
-                        elif 'composite wood product (cwp)' in f_low: def_val = ['Does Not Apply']
-                        elif 'tsca title vi compliant' in f_low: def_val = ['Does Not Apply']
-                        elif 'supplier intended and approved use' in f_low:
-                            def_val = [x for x in ['Non Residential Use', 'Residential Use'] if x in opts]
-                            if not def_val: def_val = ['Non Residential Use', 'Residential Use']  
-                        elif 'commercial warranty' in f_low: def_val = ['Yes'] 
-                        elif 'contains flame retardant' in f_low: def_val = ['No']
-                        elif 'wayfair compliance verified' in f_low: def_val = ['Yes']
-                        st.session_state['user_prefs'][wid] = def_val
+                        st.session_state['user_prefs'][wid] = []
 
                 saved = st.session_state['user_prefs'].get(wid, def_val)
                 
-                # Kullanıcının daha önce girdiği özel değerleri opts listesine dahil edelim (hata vermemesi için)
+                # Önceden seçilmiş ama listeden kaybolmuş değer varsa onu da dahil et (hata vermemesi için)
                 for s_val in saved:
                     if s_val not in opts:
                         opts.append(s_val)
                 
-                if HAS_TAGS:
-                    sel = st_tags(
-                        label=fname,
-                        text="Seçin veya yazıp Enter'a basın",
-                        value=saved,
-                        suggestions=opts,
-                        key=f"sel_{wid}"
-                    )
-                else:
-                    sel = st.multiselect(fname, options=opts, default=saved, key=f"sel_{wid}")
-                    
+                # Eski tertemiz standart multiselect
+                sel = st.multiselect(fname, options=opts, default=saved, key=f"sel_{wid}")
+                
                 dyn_selections[wid] = sel
                 st.session_state['user_prefs'][wid] = sel
                 
