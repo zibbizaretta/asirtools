@@ -88,35 +88,68 @@ def translate_features(text, do_conversion):
     
     return text
 
-def calculate_freight_class(weight_lbs, l_in, w_in, h_in):
-    vol = (l_in * w_in * h_in) / 1728
-    if vol == 0: 
-        return "60"
-    dens = weight_lbs / vol
-    if dens < 1: 
-        return "400"
-    elif dens < 2: 
-        return "300"
-    elif dens < 4: 
-        return "200"
-    elif dens < 6: 
-        return "150"
-    elif dens < 8: 
-        return "125"
-    elif dens < 10: 
-        return "100"
-    else: 
-        return "60"
-
-def get_ship_type(weight_lbs, l_in, w_in, h_in):
-    dims = sorted([l_in, w_in, h_in], reverse=True)
-    length = dims[0]
-    girth = 2 * (dims[1] + dims[2])
+def get_product_logistics(cartons, is_us):
+    """
+    Zorunlu Sıralama ve Kapsayıcı LTL (Any) Kontrolü.
+    Verilen tüm kutuları tarar, en büyük olanı (Hacim + Ağırlık) Ana Kutu olarak başa alır.
+    Ayrıca herhangi bir kutu 150 lbs veya inç limitlerini aşarsa ürünü LTL yapar.
+    """
+    total_lbs = 0
+    total_vol_ft3 = 0
+    is_ltl = False
     
-    if weight_lbs < 150 and (length + girth) < 165 and length < 108: 
-        return "Small Parcel", None
+    processed_cartons = []
+    
+    for c in cartons:
+        # Template'e yazılacak değerler bölgeye (US/EU) göre belirlenir
+        lbs = round(c['kg'] * 2.20462, 2) if is_us else c['kg']
+        x_in = round(c['x'] * 0.393701, 2) if is_us else c['x']
+        y_in = round(c['y'] * 0.393701, 2) if is_us else c['y']
+        z_in = round(c['z'] * 0.393701, 2) if is_us else c['z']
         
-    return "LTL", calculate_freight_class(weight_lbs, l_in, w_in, h_in)
+        # Ancak LTL limit hesaplamaları daima INCH ve LBS üzerinden yapılmalıdır
+        calc_lbs = round(c['kg'] * 2.20462, 2)
+        calc_x = round(c['x'] * 0.393701, 2)
+        calc_y = round(c['y'] * 0.393701, 2)
+        calc_z = round(c['z'] * 0.393701, 2)
+        
+        dims = sorted([calc_x, calc_y, calc_z], reverse=True)
+        length = dims[0]
+        girth = 2 * (dims[1] + dims[2])
+        
+        vol_ft3 = (calc_x * calc_y * calc_z) / 1728
+        total_vol_ft3 += vol_ft3
+        total_lbs += calc_lbs
+        
+        # Herhangi bir kutuda sınır aşımı var mı?
+        if calc_lbs >= 150 or (length + girth) >= 165 or length >= 108:
+            is_ltl = True
+            
+        processed_cartons.append({
+            'vol': vol_ft3,
+            'weight_lbs': calc_lbs,
+            'kg': c['kg'], 'x': c['x'], 'y': c['y'], 'z': c['z'],
+            'mapped_w': lbs, 'mapped_x': x_in, 'mapped_y': y_in, 'mapped_z': z_in
+        })
+        
+    # Zorunlu büyükten küçüğe sıralama (Hacim öncelikli)
+    processed_cartons.sort(key=lambda c: (c['vol'], c['weight_lbs']), reverse=True)
+    
+    ship_type = "LTL" if is_ltl else "Small Parcel"
+    
+    if total_vol_ft3 == 0:
+        freight_class = "60"
+    else:
+        dens = total_lbs / total_vol_ft3
+        if dens < 1: freight_class = "400"
+        elif dens < 2: freight_class = "300"
+        elif dens < 4: freight_class = "200"
+        elif dens < 6: freight_class = "150"
+        elif dens < 8: freight_class = "125"
+        elif dens < 10: freight_class = "100"
+        else: freight_class = "60"
+        
+    return ship_type, freight_class, processed_cartons
 
 def validate_column_mappings(col_map, mappings):
     return [k for k in mappings if k not in col_map]
@@ -258,9 +291,6 @@ def generate_bedding_note(text, h_val, w_val, bed_size, is_us):
     return ""
 
 def get_brand_by_category(category_text):
-    """
-    Kategori metnine göre otomatik marka döndürür. (Türkçe ve İngilizce karşılıklarla)
-    """
     if pd.isna(category_text) or not str(category_text).strip():
         return ""
         
@@ -290,7 +320,7 @@ def get_brand_by_category(category_text):
 
 # --- 3. ANA İŞLEME MOTORU (WAYFAIR ŞABLONU İÇİN) ---
 
-def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, progress_callback=None):
+def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, marketing_file=None, progress_callback=None):
     data_file.seek(0)
     template_file.seek(0)
     
@@ -303,9 +333,9 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
         
     df_data = df_data.reset_index(drop=True)
     
-    # Kategori sütununu otomatik bulmaya çalışalım (CATEGORY, KATEGORİ, vs.)
     cat_col_name = next((col for col in df_data.columns if 'categor' in str(col).lower() or 'kategori' in str(col).lower()), None)
     
+    # Koli / Paket verilerini hazırlama
     carton_dict = {}
     if carton_file is not None:
         carton_file.seek(0)
@@ -337,17 +367,28 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                     except: 
                         w_val, x_val, y_val, z_val = 0, 0, 0, 0
                         
-                    carton_dict[c_sku].append({
-                        'kg': w_val, 
-                        'x': x_val, 
-                        'y': y_val, 
-                        'z': z_val
-                    })
+                    carton_dict[c_sku].append({'kg': w_val, 'x': x_val, 'y': y_val, 'z': z_val})
+
+    # Marketing Copy Verilerini Çekme (Opsiyonel)
+    marketing_dict = {}
+    missing_marketing_skus = set()
+    if marketing_file is not None:
+        marketing_file.seek(0)
+        df_m = pd.read_excel(marketing_file)
+        sku_col = next((c for c in df_m.columns if 'sku' in str(c).lower()), None)
+        eng_col = next((c for c in df_m.columns if 'english' in str(c).lower()), None)
+        if sku_col and eng_col:
+            for _, r in df_m.iterrows():
+                sk = str(r[sku_col]).strip()
+                en = str(r[eng_col]).strip()
+                if sk and en and en.lower() != 'nan':
+                    marketing_dict[sk] = en
 
     wb = openpyxl.load_workbook(template_file)
     target_sheet = next((s for s in wb.sheetnames if not any(x in s for x in ["Additional", "WAYFAIR", "Instructions", "Valid Values", "Failed"])), wb.sheetnames[0])
     ws_main = wb[target_sheet]
 
+    # Şablon Kolon Eşleştirmeleri
     col_map = {}
     for c in range(1, ws_main.max_column + 1):
         r1_val = str(ws_main.cell(row=1, column=c).value).strip() if ws_main.cell(row=1, column=c).value else ""
@@ -364,23 +405,19 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
             if 'leg' not in r4_lower and 'base' not in r4_lower and 'shade' not in r4_lower: 
                 col_map['featureDescription::color'] = col_let
                 
-        if 'overall height' in r4_lower or 'overallheight' in r1_lower: 
-            col_map['featureDescription::overallHeight'] = col_let
-        elif 'overall width' in r4_lower or 'overallwidth' in r1_lower: 
-            col_map['featureDescription::overallWidth'] = col_let
-        elif 'overall depth' in r4_lower or 'overalldepth' in r1_lower: 
-            col_map['featureDescription::overallDepth'] = col_let
+        if 'overall height' in r4_lower or 'overallheight' in r1_lower: col_map['featureDescription::overallHeight'] = col_let
+        elif 'overall width' in r4_lower or 'overallwidth' in r1_lower: col_map['featureDescription::overallWidth'] = col_let
+        elif 'overall depth' in r4_lower or 'overalldepth' in r1_lower: col_map['featureDescription::overallDepth'] = col_let
+        elif 'overall product weight' in r4_lower or 'overallproductweight' in r1_lower: col_map['featureDescription::overallProductWeight'] = col_let
+        
+        if 'marketing copy' in r4_lower or 'marketingcopy' in r1_lower: col_map['featureDescription::marketingCopy'] = col_let
+        if 'romance copy' in r4_lower or 'romancecopy' in r1_lower: col_map['featureDescription::romanceCopy'] = col_let
             
-        if 'set / single' in r4_lower: 
-            col_map['bedding::setSingle'] = col_let
-        if 'bedding product type' in r4_lower: 
-            col_map['bedding::productType'] = col_let
-        if 'bedding size' in r4_lower: 
-            col_map['bedding::size'] = col_let
-        if 'bedding material' in r4_lower: 
-            col_map['bedding::material'] = col_let
-        if 'pieces included' in r4_lower or 'total number of pieces included' in r4_lower: 
-            col_map['bedding::pieces'] = col_let
+        if 'set / single' in r4_lower: col_map['bedding::setSingle'] = col_let
+        if 'bedding product type' in r4_lower: col_map['bedding::productType'] = col_let
+        if 'bedding size' in r4_lower: col_map['bedding::size'] = col_let
+        if 'bedding material' in r4_lower: col_map['bedding::material'] = col_let
+        if 'pieces included' in r4_lower or 'total number of pieces included' in r4_lower: col_map['bedding::pieces'] = col_let
 
         for i in range(1, 6):
             if f'image file name or url {i}' in r4_lower: 
@@ -405,65 +442,48 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
             progress_callback((index + 1) / total_rows)
             
         sku_key = str(row.get('CODE', '')).strip()
-        try: 
-            pkg_count = int(float(row.get('NUMBER OF PACKAGES', 1)))
-        except: 
-            pkg_count = 1
+        try: pkg_count = int(float(row.get('NUMBER OF PACKAGES', 1)))
+        except: pkg_count = 1
 
         kg = float(row.get('WEIGHT (Kg)', 0) or 0)
         x_cm = float(row.get('PACKAGING SIZE - X (cm)', 0) or 0)
         y_cm = float(row.get('PACKAGING SIZE - Y (cm)', 0) or 0)
         z_cm = float(row.get('PACKAGING SIZE - Z (cm)', 0) or 0)
         
-        prod_weight_lbs = round((kg - 0.1) * 2.20462, 2) if kg > 0.1 else 0
+        leave_carton_blank = False 
 
-        leave_carton_blank = False # Çoklu paket var ve koli detayı yoksa kutuyu boş bırakma bayrağı
-
+        raw_cartons = []
         if carton_file is not None and sku_key in carton_dict and len(carton_dict[sku_key]) > 0:
-            cartons = carton_dict[sku_key]
-            kg = cartons[0]['kg']
-            x_cm = cartons[0]['x']
-            y_cm = cartons[0]['y']
-            z_cm = cartons[0]['z']
-            
-            prod_weight_lbs = max(0, round((sum(c['kg'] for c in cartons) * 2.20462) - 5, 2))
-            
-            if len(cartons) > 1 and sku_key not in processed_skus_for_cartons:
-                for ext_c in cartons[1:]: 
-                    additional_cartons_data.append({
-                        'sku': sku_key, 
-                        'kg': ext_c['kg'], 
-                        'x': ext_c['x'], 
-                        'y': ext_c['y'], 
-                        'z': ext_c['z']
-                    })
-                processed_skus_for_cartons.add(sku_key)
-                
-        elif pkg_count != 1:
-            # Carton file yok veya bulunamadı, ama paket sayısı 1'den büyük.
-            # Eskisi gibi ürünü atlamıyoruz, koli bilgilerini boş geçeceğiz.
+            raw_cartons = carton_dict[sku_key]
+        elif pkg_count > 1:
             leave_carton_blank = True
+        else:
+            raw_cartons = [{'kg': kg, 'x': x_cm, 'y': y_cm, 'z': z_cm}]
+
+        # Product Weight Hesaplaması ve Eşleştirmesi (Overall Product Weight de buradan faydalanacak)
+        if carton_file is not None and sku_key in carton_dict and len(carton_dict[sku_key]) > 0:
+            if ui_data['is_us']:
+                prod_weight_val = max(0.0, round((sum(c['kg'] for c in raw_cartons) * 2.20462) - 5, 2))
+            else:
+                prod_weight_val = max(0.0, round(sum(c['kg'] for c in raw_cartons) - 2.5, 2))
+        else:
+            if ui_data['is_us']:
+                prod_weight_val = round((kg - 0.1) * 2.20462, 2) if kg > 0.1 else 0.0
+            else:
+                prod_weight_val = round(kg - 0.1, 2) if kg > 0.1 else 0.0
 
         try:
             feat_text = row.get('FEATURES', '')
             raw_h, raw_w, raw_d = extract_overall_dims(feat_text)
             b_info = extract_bedding_info(feat_text, row.get('DESCRIPTION', ''), raw_h, raw_w)
             
-            lbs = round(kg * 2.20462, 2)
-            x_in = round(x_cm * 0.393701, 2)
-            y_in = round(y_cm * 0.393701, 2)
-            z_in = round(z_cm * 0.393701, 2)
-            
             ean = row.get('EAN CODE', '')
             ean_str = "{:.0f}".format(float(ean)) if pd.notna(ean) and str(ean).strip() != '' else ""
 
             color_val = str(row.get('COLOR', ''))
-            if color_val.lower() == 'nan':
-                color_val = ''
-            else:
-                color_val = re.sub(r'\s*;\s*', '; ', color_val.replace('\n', ';').replace(',', ';').replace('/', ';')).strip('; ')
+            if color_val.lower() == 'nan': color_val = ''
+            else: color_val = re.sub(r'\s*;\s*', '; ', color_val.replace('\n', ';').replace(',', ';').replace('/', ';')).strip('; ')
 
-            # Kategoriye göre markayı otomatik belirle
             cat_val = row.get(cat_col_name, '') if cat_col_name else ''
             auto_brand = get_brand_by_category(cat_val)
 
@@ -478,7 +498,7 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 'featureDescription::overallWidth': convert_to_inch(raw_w) if ui_data['is_us'] else raw_w,
                 'featureDescription::overallDepth': convert_to_inch(raw_d) if ui_data['is_us'] else raw_d,
                 'featureDescription::color': color_val, 
-                'core::manufacturerId': auto_brand, # Markayı artık fonksiyondan alıyoruz
+                'core::manufacturerId': auto_brand, 
                 'shippingAndFulfillment::minimumOrderQuantity': 1, 
                 'shippingAndFulfillment::forceQuantityMultiplier': 1, 
                 'shippingAndFulfillment::displaySetQuantity': 1,
@@ -489,20 +509,46 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 'bedding::pieces': b_info['pieces']
             }
             
-            # Karton bilgilerini yaz (veya paket çokluysa boş bırak)
-            if leave_carton_blank:
+            # Ürün bazlı weight ataması ve Overall weight'e bire bir yazılması
+            mappings['shippingAndFulfillment::productWeight'] = prod_weight_val
+            mappings['featureDescription::overallProductWeight'] = prod_weight_val
+
+            # Koli hesaplamaları (LTL ve Kutu Dizilimi)
+            if leave_carton_blank or not raw_cartons:
                 mappings['shippingAndFulfillment::weight'] = ""
                 mappings['shippingAndFulfillment::height'] = ""
                 mappings['shippingAndFulfillment::width'] = ""
                 mappings['shippingAndFulfillment::depth'] = ""
-                mappings['shippingAndFulfillment::productWeight'] = ""
             else:
-                mappings['shippingAndFulfillment::weight'] = lbs
-                mappings['shippingAndFulfillment::height'] = x_in
-                mappings['shippingAndFulfillment::width'] = y_in
-                mappings['shippingAndFulfillment::depth'] = z_in
-                mappings['shippingAndFulfillment::productWeight'] = prod_weight_lbs
+                ship_type, freight_class, processed_cartons = get_product_logistics(raw_cartons, ui_data['is_us'])
+                main_c = processed_cartons[0]
+                
+                mappings['shippingAndFulfillment::weight'] = main_c['mapped_w']
+                mappings['shippingAndFulfillment::height'] = main_c['mapped_x']
+                mappings['shippingAndFulfillment::width'] = main_c['mapped_y']
+                mappings['shippingAndFulfillment::depth'] = main_c['mapped_z']
+                
+                if ui_data['is_us']:
+                    mappings['shippingAndFulfillment::shipType'] = ship_type
+                    mappings['shippingAndFulfillment::freightClass'] = freight_class
+                    
+                if len(processed_cartons) > 1 and sku_key not in processed_skus_for_cartons:
+                    for ext_c in processed_cartons[1:]: 
+                        additional_cartons_data.append({
+                            'sku': sku_key, 
+                            'kg': ext_c['kg'], 'x': ext_c['x'], 'y': ext_c['y'], 'z': ext_c['z']
+                        })
+                    processed_skus_for_cartons.add(sku_key)
 
+            # Marketing Copy eşleştirilmesi
+            if marketing_file is not None:
+                if sku_key in marketing_dict:
+                    mappings['featureDescription::marketingCopy'] = marketing_dict[sku_key]
+                    mappings['featureDescription::romanceCopy'] = marketing_dict[sku_key]
+                else:
+                    missing_marketing_skus.add(sku_key)
+
+            # Resim bağlantıları URL ayıklama
             urls = []
             for col in df_data.columns:
                 col_str = str(col).lower()
@@ -524,13 +570,6 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
             if ui_data['is_us']:
                 mappings['shippingAndFulfillment::leadTime'] = 600
                 mappings['shippingAndFulfillment::replacementLeadTime'] = 120
-                
-                # Karton boş değilse ve geçerli sayılar varsa Shipping Type hesapla
-                if not leave_carton_blank and isinstance(x_in, (int, float)) and x_in > 0 and y_in > 0 and z_in > 0:
-                    stype, fclass = get_ship_type(lbs, x_in, y_in, z_in)
-                    mappings['shippingAndFulfillment::shipType'] = stype
-                    if fclass: 
-                        mappings['shippingAndFulfillment::freightClass'] = fclass
 
             if not missing_cols_reported:
                 missing = validate_column_mappings(col_map, mappings)
@@ -538,10 +577,7 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                     ui_data['missing_cols'] = missing
                 missing_cols_reported = True
 
-            for k, v in mappings.items():
-                if k in col_map and pd.notna(v) and str(v).strip() != '': 
-                    ws_main[f"{col_map[k]}{g_satir}"] = v
-
+            # Dinamik UI verileri ve özel/kombine seçimler
             for wid, val in ui_data['dyn_drops'].items():
                 if wid in col_map and val:
                     if isinstance(val, list):
@@ -550,6 +586,10 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                         final_str = str(val)
                     if final_str: 
                         ws_main[f"{col_map[wid]}{g_satir}"] = final_str
+
+            for k, v in mappings.items():
+                if k in col_map and pd.notna(v) and str(v).strip() != '': 
+                    ws_main[f"{col_map[k]}{g_satir}"] = v
 
             dim_writes = {
                 'h': convert_to_inch(raw_h) if ui_data['is_us'] else raw_h, 
@@ -566,29 +606,35 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
 
             satirlar = [s.strip() for s in translate_features(feat_text, ui_data['is_us']).split('\n') if s.strip()]
             bedding_note = generate_bedding_note(feat_text, raw_h, raw_w, b_info['bed_size'], ui_data['is_us'])
+            if bedding_note:
+                satirlar.append(bedding_note)
+                
+            final_feats = ["", "", "", "", ""]
+            n = len(satirlar)
+            
+            if n == 0:
+                final_feats[0] = "Made In Türkiye"
+            elif n <= 4:
+                for idx in range(n):
+                    final_feats[idx] = satirlar[idx]
+                final_feats[n] = "Made In Türkiye"
+            else:
+                for idx in range(4):
+                    final_feats[idx] = satirlar[idx]
+                remaining_text = " | ".join(satirlar[4:])
+                final_feats[4] = f"{remaining_text} | Made In Türkiye"
             
             for i, col_let in enumerate(feature_cols):
-                if i < 4 and i < len(satirlar): 
-                    ws_main[f"{col_let}{g_satir}"] = satirlar[i]
-                elif i == 4:
-                    kalan_metin = " | ".join(satirlar[4:])
-                    final_feats = []
-                    if kalan_metin: 
-                        final_feats.append(kalan_metin)
-                    if bedding_note: 
-                        final_feats.append(bedding_note)
-                    final_feats.append("Made In Türkiye")
-                    ws_main[f"{col_let}{g_satir}"] = " | ".join(final_feats)
+                if i < 5:
+                    ws_main[f"{col_let}{g_satir}"] = final_feats[i]
                     
             processed += 1
             written_rows.append(g_satir)
             
         except Exception as e: 
             errors.append({
-                'Satır': index + 2, 
-                'Ürün Kodu': sku_key, 
-                'Açıklama': str(row.get('DESCRIPTION', '') or '')[:60], 
-                'Hata Detayı': str(e)
+                'Satır': index + 2, 'Ürün Kodu': sku_key, 
+                'Açıklama': str(row.get('DESCRIPTION', '') or '')[:60], 'Hata Detayı': str(e)
             })
 
     yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
@@ -599,20 +645,16 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 if cell.value is None or str(cell.value).strip() == "": 
                     cell.fill = yellow_fill
 
+    # Ek paket ve görsellerin işlenmesi
     if additional_images_data:
         add_sheet = next((wb[s] for s in wb.sheetnames if 'additional' in s.lower() and 'image' in s.lower()), None)
         if add_sheet:
-            sku_col_let = 'A'
-            url_col_let = 'B'
-            start_row = 5
-            
+            sku_col_let, url_col_let, start_row = 'A', 'B', 5
             for c in range(1, add_sheet.max_column + 1):
                 r1 = str(add_sheet.cell(row=1, column=c).value).lower()
                 r4 = str(add_sheet.cell(row=4, column=c).value).lower()
-                if 'supplier part number' in r4 or 'sku' in r4 or 'part number' in r1: 
-                    sku_col_let = add_sheet.cell(row=1, column=c).column_letter
-                if 'image file name or url' in r4 or 'url' in r4 or 'media::' in r1: 
-                    url_col_let = add_sheet.cell(row=1, column=c).column_letter
+                if 'supplier part number' in r4 or 'sku' in r4 or 'part number' in r1: sku_col_let = add_sheet.cell(row=1, column=c).column_letter
+                if 'image file name or url' in r4 or 'url' in r4 or 'media::' in r1: url_col_let = add_sheet.cell(row=1, column=c).column_letter
                     
             for r in range(4, add_sheet.max_row + 10):
                 if not add_sheet[f"{sku_col_let}{r}"].value:
@@ -629,20 +671,12 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
         if add_carton_sheet:
             col_map_c = {}
             for c in range(1, add_carton_sheet.max_column + 1):
-                r1 = str(add_carton_sheet.cell(row=1, column=c).value).lower()
-                r4 = str(add_carton_sheet.cell(row=4, column=c).value).lower()
-                let = add_carton_sheet.cell(row=1, column=c).column_letter
-                
-                if 'supplier part number' in r4 or 'sku' in r4 or 'part number' in r1: 
-                    col_map_c['sku'] = let
-                elif 'weight' in r4 or 'weight' in r1: 
-                    col_map_c['weight'] = let
-                elif 'height' in r4 or 'height' in r1: 
-                    col_map_c['height'] = let
-                elif 'width' in r4 or 'width' in r1: 
-                    col_map_c['width'] = let
-                elif 'depth' in r4 or 'depth' in r1: 
-                    col_map_c['depth'] = let
+                r1, r4, let = str(add_carton_sheet.cell(row=1, column=c).value).lower(), str(add_carton_sheet.cell(row=4, column=c).value).lower(), add_carton_sheet.cell(row=1, column=c).column_letter
+                if 'supplier part number' in r4 or 'sku' in r4 or 'part number' in r1: col_map_c['sku'] = let
+                elif 'weight' in r4 or 'weight' in r1: col_map_c['weight'] = let
+                elif 'height' in r4 or 'height' in r1: col_map_c['height'] = let
+                elif 'width' in r4 or 'width' in r1: col_map_c['width'] = let
+                elif 'depth' in r4 or 'depth' in r1: col_map_c['depth'] = let
                     
             if 'sku' in col_map_c:
                 start_row = 5
@@ -658,34 +692,24 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                     c_d_final = round(c_data['z'] * 0.393701, 2) if ui_data['is_us'] else c_data['z']
                     
                     add_carton_sheet[f"{col_map_c['sku']}{start_row}"] = c_data['sku']
-                    if 'weight' in col_map_c: 
-                        add_carton_sheet[f"{col_map_c['weight']}{start_row}"] = c_w_final
-                    if 'height' in col_map_c: 
-                        add_carton_sheet[f"{col_map_c['height']}{start_row}"] = c_h_final
-                    if 'width' in col_map_c: 
-                        add_carton_sheet[f"{col_map_c['width']}{start_row}"] = c_w_final_2
-                    if 'depth' in col_map_c: 
-                        add_carton_sheet[f"{col_map_c['depth']}{start_row}"] = c_d_final
+                    if 'weight' in col_map_c: add_carton_sheet[f"{col_map_c['weight']}{start_row}"] = c_w_final
+                    if 'height' in col_map_c: add_carton_sheet[f"{col_map_c['height']}{start_row}"] = c_h_final
+                    if 'width' in col_map_c: add_carton_sheet[f"{col_map_c['width']}{start_row}"] = c_w_final_2
+                    if 'depth' in col_map_c: add_carton_sheet[f"{col_map_c['depth']}{start_row}"] = c_d_final
                     start_row += 1
 
     output = io.BytesIO()
     wb.save(output)
-    return output.getvalue(), processed, skipped, errors
+    return output.getvalue(), processed, skipped, errors, list(missing_marketing_skus)
 
 
-# --- YENİ: SADECE DATA EXCEL'İ DÖNÜŞTÜREN MOTOR (A'DAN Z'YE AÇIK KAYNAK VE BİÇİM KORUMALI) ---
+# --- YENİ: SADECE DATA EXCEL'İ DÖNÜŞTÜREN MOTOR ---
 
 def process_data_excel_only(data_file, is_us):
-    """
-    Pandas yerine tamamen openpyxl kullanarak Data Excel'ini işler.
-    Orijinal satır renkleri, yazı tipleri, kenarlıkları ve yapısı zerre bozulmaz.
-    """
     data_file.seek(0)
     wb = openpyxl.load_workbook(data_file)
     ws = wb.active
 
-    # --- YENİ EKLENEN: HÜCRE ÜZERİNE YAPIŞTIRILMIŞ FİZİKSEL RESİMLERİ SİLME ---
-    # Hücrelerin üzerine yapıştırılmış olan yüzen resimleri kökünden temizliyoruz.
     if hasattr(ws, '_images'):
         ws._images = []
 
@@ -699,7 +723,6 @@ def process_data_excel_only(data_file, is_us):
 
     headers = get_headers()
 
-    # 1. Hayalet / Özet Satırları Temizleme (CODE sütunu boş olanlar)
     code_col = headers.get('CODE')
     if code_col:
         for row in range(ws.max_row, 1, -1):
@@ -709,7 +732,6 @@ def process_data_excel_only(data_file, is_us):
                 
     headers = get_headers()
 
-    # 2. EAN CODE (Bilimsel E+12 Gösterimini Düzelterek Düz Metne Çevirme)
     ean_col = headers.get('EAN CODE')
     if ean_col:
         for row in range(2, ws.max_row + 1):
@@ -722,7 +744,6 @@ def process_data_excel_only(data_file, is_us):
                     cell.value = str(cell.value).strip()
                     cell.number_format = '@'
 
-    # 3. COLOR Sütununu Temizleme
     color_col = headers.get('COLOR')
     if color_col:
         for row in range(2, ws.max_row + 1):
@@ -734,7 +755,6 @@ def process_data_excel_only(data_file, is_us):
                     c_val = re.sub(r'\s*;\s*', '; ', c_val).strip('; ')
                     cell.value = c_val
 
-    # 4. EXTRA FEATURES (Sadece Çeviri - Bölme İşlemi YOK)
     ef_col = headers.get('EXTRA FEATURES')
     if ef_col:
         for row in range(2, ws.max_row + 1):
@@ -742,7 +762,6 @@ def process_data_excel_only(data_file, is_us):
             if cell.value:
                 cell.value = translate_features(str(cell.value), is_us)
 
-    # 5. FEATURES (Çeviri ve 5 Sütuna Bölme İşlemi)
     feat_col = headers.get('FEATURES')
     if feat_col:
         ws.insert_cols(feat_col + 1, 5)
@@ -764,6 +783,7 @@ def process_data_excel_only(data_file, is_us):
                 nc.fill = copy.copy(ref_header.fill)
                 nc.alignment = copy.copy(ref_header.alignment)
 
+        # Made In Türkiye Kuralları (Sadece Data Excel'i İçin)
         for row in range(2, ws.max_row + 1):
             cell = ws.cell(row=row, column=feat_col)
             features_to_write = ["", "", "", "", ""]
@@ -773,21 +793,18 @@ def process_data_excel_only(data_file, is_us):
                 lines = [s.strip() for s in translated.split('\n') if s.strip()]
                 
                 n = len(lines)
-                if n < 5:
-                    # Var olan satırları yerleştir
+                if n == 0:
+                    features_to_write[0] = "Made In Türkiye"
+                elif n <= 4:
                     for idx in range(n):
                         features_to_write[idx] = lines[idx]
-                    # Hemen bir sonraki boş sütuna "Made In Türkiye" koy
                     features_to_write[n] = "Made In Türkiye"
                 else:
-                    # İlk 4 satırı aynen yerleştir
                     for idx in range(4):
                         features_to_write[idx] = lines[idx]
-                    # Geri kalanları 5. sütunda birleştir ve en sonuna "Made In Türkiye" ekle
                     remaining_text = " | ".join(lines[4:])
                     features_to_write[4] = f"{remaining_text} | Made In Türkiye"
             else:
-                # Özellik alanı tamamen boşsa sadece 1. özelliğe "Made In Türkiye" yaz
                 features_to_write[0] = "Made In Türkiye"
 
             ws.cell(row=row, column=feat_col + 1).value = features_to_write[0]
@@ -796,7 +813,6 @@ def process_data_excel_only(data_file, is_us):
             ws.cell(row=row, column=feat_col + 4).value = features_to_write[3]
             ws.cell(row=row, column=feat_col + 5).value = features_to_write[4]
 
-    # 6. Ölçüleri Blok Halinde (Kg/cm ve Lbs/inch) Gruplayarak Araya Sütun Ekleme
     if is_us:
         headers = get_headers()
         w_col = headers.get('WEIGHT (Kg)')
@@ -806,7 +822,6 @@ def process_data_excel_only(data_file, is_us):
         
         metric_cols = [c for c in [w_col, x_col, y_col, z_col] if c is not None]
         if metric_cols:
-            # Orijinal metrik değerlerin bittiği yerin tam sağına "Amerikan Bloğu" açıyoruz.
             insert_idx = max(metric_cols) + 1
             ws.insert_cols(insert_idx, 4)
             
@@ -842,7 +857,6 @@ def process_data_excel_only(data_file, is_us):
                     try: ws.cell(row=row, column=insert_idx + 3).value = round(float(val) * 0.393701, 2)
                     except: pass
 
-    # 7. Resim, URL ve Link Barındıran Sütunları Tablonun EN SAĞINA Taşıma
     headers = get_headers()
     img_cols = []
     
@@ -863,8 +877,7 @@ def process_data_excel_only(data_file, is_us):
             for row in range(1, ws.max_row + 1):
                 cell = ws.cell(row=row, column=col_idx)
                 cell_data = {
-                    'value': cell.value,
-                    'font': copy.copy(cell.font) if cell.has_style and cell.font else None,
+                    'value': cell.value, 'font': copy.copy(cell.font) if cell.has_style and cell.font else None,
                     'border': copy.copy(cell.border) if cell.has_style and cell.border else None,
                     'fill': copy.copy(cell.fill) if cell.has_style and cell.fill else None,
                     'alignment': copy.copy(cell.alignment) if cell.has_style and cell.alignment else None,
@@ -887,67 +900,43 @@ def process_data_excel_only(data_file, is_us):
             for row_idx, c_data in enumerate(col_dict['data'], start=1):
                 new_cell = ws.cell(row=row_idx, column=new_col_idx)
                 new_cell.value = c_data['value']
-                
                 if c_data['font']: new_cell.font = c_data['font']
                 if c_data['border']: new_cell.border = c_data['border']
                 if c_data['fill']: new_cell.fill = c_data['fill']
                 if c_data['alignment']: new_cell.alignment = c_data['alignment']
                 if c_data['number_format']: new_cell.number_format = c_data['number_format']
 
-    # --- 8. YENİ EKLENEN: Sütun Genişliği (12), Kalın Kenarlıklar, Hizalamalar, Fontlar ve Renklendirme ---
     medium_border = Border(
-        left=Side(style='medium', color='000000'),
-        right=Side(style='medium', color='000000'),
-        top=Side(style='medium', color='000000'),
-        bottom=Side(style='medium', color='000000')
+        left=Side(style='medium', color='000000'), right=Side(style='medium', color='000000'),
+        top=Side(style='medium', color='000000'), bottom=Side(style='medium', color='000000')
     )
     
-    # Programın oluşturduğu/yazdığı sütunlar için pastel tonlu arka plan renkleri
     column_colors = {
-        'Feature 1': "DDEBF7",                 # Yumuşak Açık Mavi
-        'Feature 2': "E2EFDA",                 # Yumuşak Açık Yeşil
-        'Feature 3': "FFF2CC",                 # Yumuşak Açık Sarı
-        'Feature 4': "FCE4D6",                 # Yumuşak Açık Şeftali
-        'Feature 5': "E8D8FC",                 # Yumuşak Açık Lila / Mor
-        'WEIGHT (Lbs)': "F8CECC",              # Yumuşak Açık Pembe
-        'PACKAGING SIZE - X (in)': "D1F2EB",   # Yumuşak Açık Turkuaz
-        'PACKAGING SIZE - Y (in)': "E8F8F5",   # Yumuşak Açık Nane Yeşil
-        'PACKAGING SIZE - Z (in)': "E6F2F7"    # Yumuşak Açık Mavi-Gri
+        'Feature 1': "DDEBF7", 'Feature 2': "E2EFDA", 'Feature 3': "FFF2CC", 
+        'Feature 4': "FCE4D6", 'Feature 5': "E8D8FC", 'WEIGHT (Lbs)': "F8CECC", 
+        'PACKAGING SIZE - X (in)': "D1F2EB", 'PACKAGING SIZE - Y (in)': "E8F8F5", 'PACKAGING SIZE - Z (in)': "E6F2F7"
     }
     
     headers = get_headers()
     for col_name, col_idx in headers.items():
         col_letter = get_column_letter(col_idx)
-        # Sütun genişliklerini standart 12 ile sınırlandırıyoruz
         ws.column_dimensions[col_letter].width = 12
-        
         col_color_hex = column_colors.get(col_name)
         col_fill = PatternFill(start_color=col_color_hex, end_color=col_color_hex, fill_type="solid") if col_color_hex else None
             
         for row in range(1, ws.max_row + 1):
             cell = ws.cell(row=row, column=col_idx)
-            
-            # Kenarlıkları uygula (Taşmaları bıçak gibi keser)
             cell.border = medium_border
             
-            # Başlık satırı (Row 1) her zaman ortalı olsun
             if row == 1:
                 cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             else:
-                # Kullanıcı isteği: Doldur ve iki yana yasla (justify ve wrap text)
                 cell.alignment = Alignment(horizontal='justify', vertical='center', wrap_text=True)
-                
-                # Kullanıcı isteği: Başlık satırı hariç tüm yazılar Tahoma 8 şeklinde olsun
-                # Orijinal kalın (bold) ve eğik (italic) olma durumunu koruyalım
                 is_bold = cell.font.bold if (cell.font and cell.font.bold is not None) else False
                 is_italic = cell.font.italic if (cell.font and cell.font.italic is not None) else False
                 cell.font = Font(name='Tahoma', size=8, bold=is_bold, italic=is_italic)
-                
-                # Sütun bazında renklendirme (Pastel tonlar)
-                if col_fill:
-                    cell.fill = col_fill
+                if col_fill: cell.fill = col_fill
 
-    # Satır yüksekliklerini 18 olarak sabitleyip "tek satır" görünümüne kavuştur
     for row in range(1, ws.max_row + 1):
         ws.row_dimensions[row].height = 18
 
@@ -961,43 +950,30 @@ def process_data_excel_only(data_file, is_us):
 st.set_page_config(page_title="Wayfair & Data Akıllı Ürün Robotu V19", layout="wide")
 st.title("🛡️ Wayfair & Data Akıllı Ürün Robotu V19")
 
-# --- SOL MENÜ ---
 with st.sidebar:
     st.header("⚙️ Genel Ayarlar")
-    
-    # Aç-kapa butonunu kaldırıp, modern Radyo (Seçim) butonu ekledik
-    region_selection = st.radio(
-        "🌎 Bölge Seçimi",
-        ["US (İnç / Lbs)", "EU (cm / Kg)"],
-        horizontal=False # Yan yana veya alt alta durmasını kontrol eder
-    )
-    is_us = region_selection.startswith("US") # Seçim US ile başlıyorsa True döner
-
-    
+    region_selection = st.radio("🌎 Bölge Seçimi", ["US (İnç / Lbs)", "EU (cm / Kg)"], horizontal=False)
+    is_us = region_selection.startswith("US") 
     st.divider()
-    
-    # 2. GÜNCELLEME: Programlar arası hızlı bağlantılar eklendi.
     st.subheader("🔗 Hızlı Bağlantılar")
     st.markdown("[🛠️ Asir Tools](https://excelwebpy-asirtools.streamlit.app/)")
-    
     st.divider()
     
-# SEKME (TAB) YAPISI
 tab_wayfair, tab_data = st.tabs(["🎯 Wayfair Şablonu Hazırla", "🛠️ Sadece Data Excel'i Çevir"])
 
 # ==========================================
 # SEKME 1: WAYFAIR ŞABLONU HAZIRLAMA
 # ==========================================
 with tab_wayfair:
-    st.info("💡 Bu alan, Data Excel'inizdeki ürünleri Wayfair şablonuna otomatik eşleştirip yazar.")
+    st.info("💡 Data Excel'inizdeki ürünleri Wayfair şablonuna bağlar, koli optimizasyonu yapar ve 'Made in Türkiye' işlemlerini sorunsuz yürütür.")
     
-    u1, u2, u3 = st.columns(3)
+    u1, u2 = st.columns(2)
     with u1: 
         d_file = st.file_uploader("1. Data Excel", type="xlsx", key="wayfair_data")
+        c_file = st.file_uploader("3. Paket Excel (Opsiyon)", type="xlsx", key="wayfair_carton")
     with u2: 
         t_file = st.file_uploader("2. Template Excel", type="xlsx", key="wayfair_template")
-    with u3: 
-        c_file = st.file_uploader("3. Paket Excel (Opsiyon)", type="xlsx", key="wayfair_carton")
+        m_file = st.file_uploader("4. Marketing Copy Excel (Opsiyon)", type="xlsx", key="wayfair_marketing")
 
     AUTO_MAPPED_COLS = {
         'core::supplierPartNumber', 'core::manufacturerPartNumber', 'core::universalProductCode',
@@ -1007,7 +983,7 @@ with tab_wayfair:
         'shippingAndFulfillment::width', 'shippingAndFulfillment::depth', 'price::wholesalePrice',
         'price::manufacturerSuggestedRetailPrice', 'shippingAndFulfillment::minimumOrderQuantity',
         'shippingAndFulfillment::forceQuantityMultiplier', 'shippingAndFulfillment::displaySetQuantity',
-        'shippingAndFulfillment::productWeight', 'shippingAndFulfillment::leadTime',
+        'shippingAndFulfillment::productWeight', 'featureDescription::overallProductWeight', 'shippingAndFulfillment::leadTime',
         'shippingAndFulfillment::replacementLeadTime', 'shippingAndFulfillment::shipType',
         'shippingAndFulfillment::freightClass', 'core::collectionName', 'core::manufacturerId',
         'featureDescription::marketingCopy', 'bedding::setSingle', 'bedding::productType', 
@@ -1019,20 +995,18 @@ with tab_wayfair:
         exact_matches = {
             'overall height', 'overall width', 'overall depth', 'overallheight', 
             'overallwidth', 'overalldepth', 'color', 'colour', 'marketing copy', 
-            'marketingcopy', 'set / single', 'bedding product type', 'bedding size', 
+            'marketingcopy', 'romance copy', 'romancecopy', 'overall product weight', 'overallproductweight', 
+            'set / single', 'bedding product type', 'bedding size', 
             'bedding material', 'pieces included', 'total number of pieces included'
         }
         return f_low in exact_matches
 
     if d_file and t_file:
         t_bytes = t_file.getvalue()
-        try: 
-            df_v = pd.read_excel(io.BytesIO(t_bytes), sheet_name='Valid Values')
-        except: 
-            df_v = None
+        try: df_v = pd.read_excel(io.BytesIO(t_bytes), sheet_name='Valid Values')
+        except: df_v = None
 
         wb_t = openpyxl.load_workbook(io.BytesIO(t_bytes))
-        
         target_name = next((s for s in wb_t.sheetnames if not any(x in s for x in ["Additional", "WAYFAIR", "Instructions", "Valid Values", "Failed"])), wb_t.sheetnames[0])
         ws_t = wb_t[target_name]
 
@@ -1051,15 +1025,11 @@ with tab_wayfair:
         options_list = list(options_dict.keys())
         
         col_h, col_w, col_d = st.columns(3)
-        with col_h: 
-            h_sel = st.multiselect("Height (Yükseklik) Yazılacaklar", options=options_list)
-        with col_w: 
-            w_sel = st.multiselect("Genişlik (Width) Yazılacaklar", options=options_list)
-        with col_d: 
-            d_sel = st.multiselect("Depth (Derinlik) Yazılacaklar", options=options_list)
+        with col_h: h_sel = st.multiselect("Height (Yükseklik) Yazılacaklar", options=options_list)
+        with col_w: w_sel = st.multiselect("Genişlik (Width) Yazılacaklar", options=options_list)
+        with col_d: d_sel = st.multiselect("Depth (Derinlik) Yazılacaklar", options=options_list)
 
         selected_dim_wids = [options_dict[x] for x in h_sel + w_sel + d_sel]
-        
         dim_mappings = {
             'h': [options_dict[x] for x in h_sel], 
             'w': [options_dict[x] for x in w_sel], 
@@ -1067,8 +1037,8 @@ with tab_wayfair:
         }
 
         st.markdown("---")
-        st.subheader(f"📋 {target_name} — Doldurulması Gereken Diğer Özellikler")
-
+        st.subheader(f"📋 {target_name} — Diğer Özellikler (Seçim veya Özel Giriş)")
+        
         dyn_selections = {}
         cols_ui = st.columns(3)
         idx = 0
@@ -1083,54 +1053,52 @@ with tab_wayfair:
                 else: 
                     opts = ["Yes", "No", "Does Not Apply"]
 
-                if wid not in st.session_state['user_prefs']:
-                    f_low = fname.lower()
-                    def_val = []
-                    
-                    if 'warning required' in f_low: 
-                        def_val = ['No']
-                    elif 'country of manufacturer' in f_low: 
-                        def_val = ['Turkey'] if 'Turkey' in opts else (['Türkiye'] if 'Türkiye' in opts else [])
-                    elif 'uniform packaging and labeling regulations' in f_low: 
-                        def_val = ['Yes']
-                    elif 'reason for restriction' in f_low: 
-                        def_val = ['Does Not Apply']
-                    elif 'general certificate of conformity' in f_low: 
-                        def_val = ['Yes']
-                    elif 'canada product restriction' in f_low: 
-                        def_val = ['No']
-                    elif 'soffa compliant' in f_low: 
-                        def_val = ['Does Not Apply']
-                    elif 'canfer compliant' in f_low: 
-                        def_val = ['Does Not Apply']
-                    elif 'composite wood product (cwp)' in f_low: 
-                        def_val = ['Does Not Apply']
-                    elif 'tsca title vi compliant' in f_low: 
-                        def_val = ['Does Not Apply']
-                    elif 'supplier intended and approved use' in f_low:
-                        def_val = [x for x in ['Non Residential Use', 'Residential Use'] if x in opts]
-                        if not def_val: 
-                            def_val = ['Non Residential Use', 'Residential Use']  
-                    elif 'commercial warranty' in f_low: 
-                        def_val = ['Yes'] 
-                    elif 'contains flame retardant' in f_low: 
-                        def_val = ['No']
-                    elif 'wayfair compliance verified' in f_low: 
-                        def_val = ['Yes']
-                        
-                    st.session_state['user_prefs'][wid] = def_val
+                f_low = fname.lower()
+                def_val = []
+                
+                # Country of Origin için tek ve güçlü bir kural
+                if 'country of manufacturer' in f_low or 'country of origin' in f_low: 
+                    if 'Turkey' in opts: def_val = ['Turkey']
+                    elif 'Türkiye' in opts: def_val = ['Türkiye']
+                    else: 
+                        opts.insert(0, 'Turkey')
+                        def_val = ['Turkey']
+                else:
+                    if wid not in st.session_state['user_prefs']:
+                        if 'warning required' in f_low: def_val = ['No']
+                        elif 'uniform packaging and labeling regulations' in f_low: def_val = ['Yes']
+                        elif 'reason for restriction' in f_low: def_val = ['Does Not Apply']
+                        elif 'general certificate of conformity' in f_low: def_val = ['Yes']
+                        elif 'canada product restriction' in f_low: def_val = ['No']
+                        elif 'soffa compliant' in f_low: def_val = ['Does Not Apply']
+                        elif 'canfer compliant' in f_low: def_val = ['Does Not Apply']
+                        elif 'composite wood product (cwp)' in f_low: def_val = ['Does Not Apply']
+                        elif 'tsca title vi compliant' in f_low: def_val = ['Does Not Apply']
+                        elif 'supplier intended and approved use' in f_low:
+                            def_val = [x for x in ['Non Residential Use', 'Residential Use'] if x in opts]
+                            if not def_val: def_val = ['Non Residential Use', 'Residential Use']  
+                        elif 'commercial warranty' in f_low: def_val = ['Yes'] 
+                        elif 'contains flame retardant' in f_low: def_val = ['No']
+                        elif 'wayfair compliance verified' in f_low: def_val = ['Yes']
+                        st.session_state['user_prefs'][wid] = def_val
 
-                saved = st.session_state['user_prefs'].get(wid, [])
+                saved = st.session_state['user_prefs'].get(wid, def_val)
+                
+                # Hem açılır liste hem de özel değer girmeyi sağlayan birleşim
                 sel = st.multiselect(fname, options=opts, default=[x for x in saved if x in opts], key=f"sel_{wid}")
-                dyn_selections[wid] = sel
+                custom_val = st.text_input(f"+ Özel {fname}", key=f"custom_{wid}", placeholder="Örn: Özel Kumaş (Opsiyonel)")
+                
+                combined = list(sel)
+                if custom_val.strip():
+                    combined.append(custom_val.strip())
+                    
+                dyn_selections[wid] = combined
                 st.session_state['user_prefs'][wid] = sel
                 
             idx += 1
 
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("🚀 Wayfair Dosyasını Hazırla", type="primary", width='stretch'):
-            
-            # Artık marka veya collection name zorunluluğu yok, direkt geçiyoruz
             ui_data = {
                 'is_us': is_us, 
                 'dyn_drops': dyn_selections, 
@@ -1139,17 +1107,16 @@ with tab_wayfair:
             }
             
             progress_bar = st.progress(0, text="Hazırlanıyor...")
-            
-            def update_progress(val): 
-                progress_bar.progress(min(val, 1.0), text=f"İşleniyor... %{int(val * 100)}")
+            def update_progress(val): progress_bar.progress(min(val, 1.0), text=f"İşleniyor... %{int(val * 100)}")
 
             with st.spinner("Excel dosyası işleniyor..."):
                 d_io = io.BytesIO(d_file.getvalue())
                 t_io = io.BytesIO(t_file.getvalue())
                 c_io = io.BytesIO(c_file.getvalue()) if c_file else None
+                m_io = io.BytesIO(m_file.getvalue()) if m_file else None
                 
-                res, processed, skipped, errors = process_wayfair_v19(
-                    d_io, t_io, ui_data, carton_file=c_io, progress_callback=update_progress
+                res, processed, skipped, errors, missing_m_skus = process_wayfair_v19(
+                    d_io, t_io, ui_data, carton_file=c_io, marketing_file=m_io, progress_callback=update_progress
                 )
 
             progress_bar.progress(1.0, text="✅ Tamamlandı!")
@@ -1161,14 +1128,14 @@ with tab_wayfair:
             m3.metric("❌ Hatalı", len(errors))
             m4.metric("📦 Toplam", processed + len(skipped) + len(errors))
 
+            if missing_m_skus:
+                st.warning(f"⚠️ Marketing Copy Excel'inde eşleşmeyen (bulunamayan) {len(missing_m_skus)} adet SKU tespit edildi.\n\n" + 
+                           ", ".join(missing_m_skus[:30]) + ("..." if len(missing_m_skus) > 30 else ""))
+
             if ui_data.get('missing_cols'):
                 with st.expander(f"⚠️ {len(ui_data['missing_cols'])} Sütun Template'de Bulunamadı", expanded=True):
                     st.warning("Bu sütunlar mapping'de tanımlı ama template'de yok — ilgili veriler yazılamadı:")
                     st.code("\n".join(ui_data['missing_cols']))
-            
-            if skipped:
-                with st.expander(f"⏭️ Atlanan Satırlar — {len(skipped)} ürün", expanded=False): 
-                    st.dataframe(pd.DataFrame(skipped), width='stretch')
             
             if errors:
                 with st.expander(f"❌ Hatalı Satırlar — {len(errors)} ürün", expanded=True):
@@ -1177,21 +1144,14 @@ with tab_wayfair:
             
             if processed > 0:
                 st.success(f"✅ {processed} ürün başarıyla işlendi.")
-                # İndirme ismi sabitlendi
-                st.download_button(
-                    label="📥 Hazır Excel'i İndir", 
-                    data=res, 
-                    file_name="Wayfair_Upload-Template.xlsx", 
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
+                st.download_button(label="📥 Hazır Excel'i İndir", data=res, file_name="Wayfair_Upload-Template.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ==========================================
-# SEKME 2: SADECE DATA EXCEL'İ DÖNÜŞTÜR (YENİ)
+# SEKME 2: SADECE DATA EXCEL'İ DÖNÜŞTÜR
 # ==========================================
 with tab_data:
     st.subheader("🛠️ Data Excel Dönüştürücü (Şablonsuz)")
-    st.info("💡 Bu araç sadece veri excelinizi okur, **özellikleri (Features) 5 sütuna böler**, ölçüleri (cm/kg/ml) Amerikan standartlarına (inç/lbs/fl oz) çevirir ve koli ebatları için yeni sütunlar açıp size temiz bir Excel sunar.")
+    st.info("💡 Bu araç sadece veri excelinizi okur, özellikleri böler, yeni 'Made In Türkiye' kuralını işletir ve size formatı bozulmamış temiz bir çıktı sunar.")
     
     data_only_file = st.file_uploader("İşlenecek Data Excel'ini Yükleyin", type="xlsx", key="data_only_upload")
     
