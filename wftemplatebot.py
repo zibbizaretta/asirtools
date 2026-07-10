@@ -819,7 +819,6 @@ with tab_wayfair:
         st.subheader(f"📋 {target_name} — Özellik Eşleştirmeleri")
         st.info("💡 Sistem, yüklediğiniz şablondaki 'Valid Values' (Geçerli Değerler) sekmesini otomatik okur ve Wayfair'in resmi olarak kabul ettiği seçenekleri listeler.")
         
-        # SİHİRLİ KUTU - Genel Özel Değer Ekleme
         global_custom_vals = st.text_input("✨ Açılır Listelerde Bulamadığınız Özel Bir Değer mi Var? (Buraya yazın, aşağıdaki tüm listelere eklensin)", placeholder="Örn: My Custom Value, Başka Bir Değer")
         custom_opts_list = [x.strip() for x in global_custom_vals.split(',') if x.strip()]
 
@@ -832,40 +831,79 @@ with tab_wayfair:
                 continue
                 
             with cols_ui[idx % 3]:
-                # Valid Values tablosundan verileri çek
+                # --- SELECT ALL VE GEREKSİZ TALİMATLARI FİLTRELEME (YENİ) ---
                 if df_v is not None and fname in df_v.columns:
-                    opts = list(dict.fromkeys([str(o).strip() for o in df_v[fname].dropna().unique() if str(o).strip() and str(o).strip() != 'None']))
+                    raw_opts = df_v[fname].dropna().unique()
+                    opts = []
+                    for o in raw_opts:
+                        o_str = str(o).strip()
+                        o_low = o_str.lower()
+                        if not o_str or o_str == 'None': continue
+                        
+                        # Wayfair'in Valid Values sekmesinden sızan gereksiz kelimeleri engelle
+                        if o_low in ['required', 'conditional', 'additional', 'select', 'text', 'number', 'select all']: continue
+                        if 'please choose one or more' in o_low: continue
+                        if 'select all that apply' in o_low: continue
+                        
+                        opts.append(o_str)
+                    
+                    # Kopya (çift) değerleri temizle ve opts listesine aktar
+                    opts = list(dict.fromkeys(opts))
                 else: 
                     opts = ["Yes", "No", "Does Not Apply"]
 
-                # Kullanıcının eklediği özel değerleri (custom_opts_list) en başa ekle
                 for co in reversed(custom_opts_list):
                     if co not in opts:
                         opts.insert(0, co)
 
                 f_low = fname.lower()
-                def_val = []
                 
-                # Sadece Country of Origin için zorunlu 'Turkey' seçimini getir
-                if 'country of manufacturer' in f_low or 'country of origin' in f_low: 
-                    if 'Turkey' in opts: def_val = ['Turkey']
-                    elif 'Türkiye' in opts: def_val = ['Türkiye']
-                    else: 
-                        opts.insert(0, 'Turkey')
-                        def_val = ['Turkey']
-                else:
-                    # Diğerleri artık BOMBOŞ gelecek (Select All karmaşasını önlemek için)
-                    if wid not in st.session_state['user_prefs']:
-                        st.session_state['user_prefs'][wid] = []
+                # --- ESKİ DEFAULT CEVAPLARI GERİ GETİRDİK ---
+                if wid not in st.session_state['user_prefs']:
+                    def_val = []
+                    
+                    if 'warning required' in f_low: 
+                        def_val = ['No']
+                    elif 'country of manufacturer' in f_low or 'country of origin' in f_low: 
+                        def_val = ['Turkey'] if 'Turkey' in opts else (['Türkiye'] if 'Türkiye' in opts else [])
+                        if not def_val:
+                            opts.insert(0, 'Turkey')
+                            def_val = ['Turkey']
+                    elif 'uniform packaging and labeling regulations' in f_low: 
+                        def_val = ['Yes']
+                    elif 'reason for restriction' in f_low: 
+                        def_val = ['Does Not Apply']
+                    elif 'general certificate of conformity' in f_low: 
+                        def_val = ['Yes']
+                    elif 'canada product restriction' in f_low: 
+                        def_val = ['No']
+                    elif 'soffa compliant' in f_low: 
+                        def_val = ['Does Not Apply']
+                    elif 'canfer compliant' in f_low: 
+                        def_val = ['Does Not Apply']
+                    elif 'composite wood product (cwp)' in f_low: 
+                        def_val = ['Does Not Apply']
+                    elif 'tsca title vi compliant' in f_low: 
+                        def_val = ['Does Not Apply']
+                    elif 'supplier intended and approved use' in f_low:
+                        def_val = [x for x in ['Non Residential Use', 'Residential Use'] if x in opts]
+                        if not def_val: 
+                            def_val = ['Non Residential Use', 'Residential Use']  
+                    elif 'commercial warranty' in f_low: 
+                        def_val = ['Yes'] 
+                    elif 'contains flame retardant' in f_low: 
+                        def_val = ['No']
+                    elif 'wayfair compliance verified' in f_low: 
+                        def_val = ['Yes']
+                        
+                    st.session_state['user_prefs'][wid] = def_val
 
-                saved = st.session_state['user_prefs'].get(wid, def_val)
+                saved = st.session_state['user_prefs'].get(wid, [])
                 
-                # Önceden seçilmiş ama listeden kaybolmuş değer varsa onu da dahil et (hata vermemesi için)
                 for s_val in saved:
                     if s_val not in opts:
                         opts.append(s_val)
                 
-                # Eski tertemiz standart multiselect
                 sel = st.multiselect(fname, options=opts, default=saved, key=f"sel_{wid}")
                 
                 dyn_selections[wid] = sel
