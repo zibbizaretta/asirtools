@@ -4,3 +4,5 @@ altair
 openpyxl
 pypdf
 streamlit-cookies-manager
+pip install streamlit-tags
+streamlit-tags
