@@ -279,7 +279,7 @@ def get_brand_by_category(category_text):
     elif "furniture" in cat_lower or "mobilya" in cat_lower: 
         return "Skye Decor"
     elif "bathroom" in cat_lower or "banyo" in cat_lower: 
-        return "Nuit des reves"
+        return "Mijölnir"
     elif "bedroom" in cat_lower or "yatak odası" in cat_lower: 
         return "L'Essentiel Linge de Maison"
     elif "decoration" in cat_lower or "dekorasyon" in cat_lower or "aksesuar" in cat_lower: 
