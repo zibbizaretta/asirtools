@@ -6,6 +6,7 @@ from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 import re
 import io
 import copy
+import gc # RAM'i temizlemek için (Garbage Collector) eklendi
 
 # --- 1. HAFIZA (SESSION STATE) ---
 if 'user_prefs' not in st.session_state:
@@ -264,6 +265,8 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
                         z_val = float(r[c_z_col]) if c_z_col and pd.notna(r[c_z_col]) else 0
                     except: w_val, x_val, y_val, z_val = 0, 0, 0, 0
                     carton_dict[c_sku].append({'kg': w_val, 'x': x_val, 'y': y_val, 'z': z_val})
+        del df_carton
+        gc.collect()
 
     marketing_dict = {}
     missing_marketing_skus = set()
@@ -278,6 +281,8 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
                 en = str(r[eng_col]).strip()
                 if sk and en and en.lower() != 'nan':
                     marketing_dict[sk] = en
+        del df_m
+        gc.collect()
 
     wb = openpyxl.load_workbook(template_file)
     target_sheet = next((s for s in wb.sheetnames if not any(x in s for x in ["Additional", "WAYFAIR", "Instructions", "Valid Values", "Failed"])), wb.sheetnames[0])
@@ -515,6 +520,11 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, mar
 
     output = io.BytesIO()
     wb.save(output)
+    
+    del wb
+    del df_data
+    gc.collect()
+    
     return output.getvalue(), processed, skipped, errors, list(missing_marketing_skus)
 
 
@@ -721,6 +731,10 @@ def process_data_excel_only(data_file, is_us):
 
     output = io.BytesIO()
     wb.save(output)
+    
+    del wb
+    gc.collect()
+    
     return output.getvalue()
 
 
@@ -782,21 +796,34 @@ with tab_wayfair:
 
     if d_file and t_file:
         t_bytes = t_file.getvalue()
-        try: df_v = pd.read_excel(io.BytesIO(t_bytes), sheet_name='Valid Values')
-        except: df_v = None
-
-        wb_t = openpyxl.load_workbook(io.BytesIO(t_bytes))
-        target_name = next((s for s in wb_t.sheetnames if not any(x in s for x in ["Additional", "WAYFAIR", "Instructions", "Valid Values", "Failed"])), wb_t.sheetnames[0])
-        ws_t = wb_t[target_name]
-
-        eligible_cols = []
-        for c in range(1, ws_t.max_column + 1):
-            wid = str(ws_t.cell(1, c).value).strip()
-            status = str(ws_t.cell(3, c).value).strip()
-            fname = str(ws_t.cell(4, c).value).strip()
+        
+        # BELLEK GÜVENLİĞİ: Openpyxl'i read_only modda ve data_only=True ile açıyoruz.
+        try:
+            wb_t = openpyxl.load_workbook(io.BytesIO(t_bytes), read_only=True, data_only=True)
+            target_name = next((s for s in wb_t.sheetnames if not any(x in s for x in ["Additional", "WAYFAIR", "Instructions", "Valid Values", "Failed"])), wb_t.sheetnames[0])
+            ws_t = wb_t[target_name]
             
-            if status.lower() == "required" and wid not in AUTO_MAPPED_COLS and not wid.startswith('media::') and not is_auto_mapped_by_fname(fname):
-                eligible_cols.append((wid, fname))
+            # Bellek dostu satır satır okuma
+            row1, row3, row4 = [], [], []
+            for i, row in enumerate(ws_t.iter_rows(min_row=1, max_row=4, values_only=True)):
+                if i == 0: row1 = list(row)
+                elif i == 2: row3 = list(row)
+                elif i == 3: row4 = list(row)
+
+            eligible_cols = []
+            max_col = len(row1)
+            
+            for c in range(max_col):
+                wid = str(row1[c]).strip() if row1[c] else ""
+                status = str(row3[c]).strip() if len(row3) > c and row3[c] else ""
+                fname = str(row4[c]).strip() if len(row4) > c and row4[c] else ""
+                
+                if status.lower() == "required" and wid not in AUTO_MAPPED_COLS and not wid.startswith('media::') and not is_auto_mapped_by_fname(fname):
+                    eligible_cols.append((wid, fname))
+                    
+        except Exception as e:
+            st.error(f"Template okunurken bir hata oluştu: {e}")
+            eligible_cols = []
 
         st.markdown("---")
         st.subheader("📐 Özel Ölçü Sütun Eşleştirmeleri")
@@ -816,8 +843,8 @@ with tab_wayfair:
         }
 
         st.markdown("---")
-        st.subheader(f"📋 {target_name} — Özellik Eşleştirmeleri")
-        st.info("💡 Sistem, yüklediğiniz şablondaki 'Valid Values' sekmesini okur ve geçerli seçenekleri listeler.")
+        st.subheader(f"📋 Özellik Eşleştirmeleri")
+        st.info("💡 Sistem, yüklediğiniz şablondaki 'Valid Values' (Geçerli Değerler) sekmesini otomatik okur ve Wayfair'in resmi olarak kabul ettiği seçenekleri listeler.")
         
         global_custom_vals = st.text_input("✨ Açılır Listelerde Bulamadığınız Özel Bir Değer mi Var? (Buraya yazın, aşağıdaki tüm listelere eklensin)", placeholder="Örn: My Custom Value, Başka Bir Değer")
         custom_opts_list = [x.strip() for x in global_custom_vals.split(',') if x.strip()]
@@ -825,30 +852,40 @@ with tab_wayfair:
         dyn_selections = {}
         cols_ui = st.columns(3)
         idx = 0
+        
+        # Valid Values okumasını BELLEK DOSTU (Sadece ilk 1000 satırı okuyacak şekilde) yapıyoruz
+        valid_values_dict = {}
+        if 'Valid Values' in wb_t.sheetnames:
+            ws_v = wb_t['Valid Values']
+            headers_v = []
+            
+            for i, row in enumerate(ws_v.iter_rows(min_row=1, max_row=1000, values_only=True)):
+                if i == 0:
+                    headers_v = list(row)
+                    for h in headers_v:
+                        if h: valid_values_dict[h] = []
+                else:
+                    for c_idx, val in enumerate(row):
+                        if c_idx < len(headers_v) and headers_v[c_idx] and val is not None:
+                            val_str = str(val).strip()
+                            if val_str and val_str.lower() not in ['required', 'conditional', 'additional', 'select', 'text', 'number', 'select all'] and 'please choose one or more' not in val_str.lower() and 'select all that apply' not in val_str.lower():
+                                valid_values_dict[headers_v[c_idx]].append(val_str)
+                                
+            # Benzersiz hale getir ve en fazla 500 seçenekle sınırla
+            for k in valid_values_dict:
+                valid_values_dict[k] = list(dict.fromkeys(valid_values_dict[k]))[:500]
+
+        wb_t.close() # Okuma bitti, hemen kapat
+        del wb_t
+        gc.collect() # RAM'i zorla temizle
 
         for wid, fname in eligible_cols:
             if wid in selected_dim_wids: 
                 continue
                 
             with cols_ui[idx % 3]:
-                # BURASI ÖNEMLİ: RAM TAŞMASINI (SEGMENTATION FAULT) ÖNLEYEN YENİ KOD
-                if df_v is not None and fname in df_v.columns:
-                    raw_opts = df_v[fname].dropna().unique()
-                    opts = []
-                    for o in raw_opts:
-                        o_str = str(o).strip()
-                        o_low = o_str.lower()
-                        if not o_str or o_str == 'None': continue
-                        
-                        # Wayfair gereksiz kelimeleri süzme
-                        if o_low in ['required', 'conditional', 'additional', 'select', 'text', 'number', 'select all']: continue
-                        if 'please choose one or more' in o_low: continue
-                        if 'select all that apply' in o_low: continue
-                        
-                        opts.append(o_str)
-                    
-                    # RAM dostu temizleme ve İLK 500 İLE SINIRLANDIRMA
-                    opts = list(dict.fromkeys(opts))[:500]
+                if fname in valid_values_dict:
+                    opts = valid_values_dict[fname]
                 else: 
                     opts = ["Yes", "No", "Does Not Apply"]
 
