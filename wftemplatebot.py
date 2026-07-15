@@ -225,9 +225,9 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
             
         c_code_col = find_col(df_carton, ['code']) or find_col(df_carton, ['sku'])
         c_w_col = find_col(df_carton, ['weight'])
-        c_x_col = find_col(df_carton, ['size', 'x'])
-        c_y_col = find_col(df_carton, ['size', 'y'])
-        c_z_col = find_col(df_carton, ['size', 'z'])
+        c_x_col = find_col(df_carton, ['size', '- x'])
+        c_y_col = find_col(df_carton, ['size', '- y'])
+        c_z_col = find_col(df_carton, ['size', '- z'])
         
         if c_code_col:
             for _, r in df_carton.iterrows():
