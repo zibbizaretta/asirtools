@@ -853,6 +853,7 @@ with tab_wayfair:
                     elif 'canada product restriction' in f_low: def_val = ['No']
                     elif 'soffa compliant' in f_low: def_val = ['Does Not Apply']
                     elif 'canfer compliant' in f_low: def_val = ['Does Not Apply']
+                    elif 'carb phase' in f_low: def_val = ['Does Not Apply']
                     elif 'composite wood product (cwp)' in f_low: def_val = ['Does Not Apply']
                     elif 'tsca title vi compliant' in f_low: def_val = ['Does Not Apply']
                     elif 'supplier intended and approved use' in f_low:
@@ -860,7 +861,7 @@ with tab_wayfair:
                         if not def_val: def_val = ['Non Residential Use', 'Residential Use']  
                     elif 'commercial warranty' in f_low: def_val = ['Yes'] 
                     elif 'contains flame retardant' in f_low: def_val = ['No']
-                    elif 'wayfair compliance verified' in f_low: def_val = ['Yes']
+                    elif 'wayfair compliance verified' in f_low: def_val = ['No']
                     elif 'battery or batteries included' in f_low: def_val = ['No']
                     elif 'additional intended use for child' in f_low: def_val = ['No']
                     st.session_state['user_prefs'][wid] = def_val
