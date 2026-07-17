@@ -858,7 +858,7 @@ with tab_wayfair:
                     elif 'california ab-1817' in f_low: def_val = ['Does Not Apply']
                     elif 'sor/2016' in f_low: def_val = ['Does Not Apply']
                     elif 'lacey act' in f_low: def_val = ['Does Not Apply']
-                    elif 'cpsc - 16 cfr' in f_low: def_val = ['Does Not Apply']
+                    elif 'cpsc - 16 cfr' in f_low: def_val = ['Yes']
                     elif 'composite wood product (cwp)' in f_low: def_val = ['Does Not Apply']
                     elif 'tsca title vi compliant' in f_low: def_val = ['Does Not Apply']
                     elif 'supplier intended and approved use' in f_low:
