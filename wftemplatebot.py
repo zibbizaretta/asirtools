@@ -862,6 +862,7 @@ with tab_wayfair:
                     elif 'contains flame retardant' in f_low: def_val = ['No']
                     elif 'wayfair compliance verified' in f_low: def_val = ['Yes']
                     elif 'battery or batteries included' in f_low: def_val = ['No']
+                    elif 'additional intended use for child' in f_low: def_val = ['No']
                     st.session_state['user_prefs'][wid] = def_val
 
                 saved = st.session_state['user_prefs'].get(wid, [])
