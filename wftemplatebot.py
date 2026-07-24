@@ -639,21 +639,29 @@ def process_data_excel_only(data_file, is_us):
     if is_us:
         headers = get_headers()
         w_col, x_col, y_col, z_col = headers.get('WEIGHT (Kg)'), headers.get('PACKAGING SIZE - X (cm)'), headers.get('PACKAGING SIZE - Y (cm)'), headers.get('PACKAGING SIZE - Z (cm)')
+        feat_col_for_dims = headers.get('FEATURES')
         metric_cols = [c for c in [w_col, x_col, y_col, z_col] if c is not None]
         if metric_cols:
             insert_idx = max(metric_cols) + 1
-            ws.insert_cols(insert_idx, 4)
+            ws.insert_cols(insert_idx, 7)
             ws.cell(row=1, column=insert_idx).value = 'WEIGHT (Lbs)'
             ws.cell(row=1, column=insert_idx + 1).value = 'PACKAGING SIZE - X (in)'
             ws.cell(row=1, column=insert_idx + 2).value = 'PACKAGING SIZE - Y (in)'
             ws.cell(row=1, column=insert_idx + 3).value = 'PACKAGING SIZE - Z (in)'
+            ws.cell(row=1, column=insert_idx + 4).value = 'Product Height(in)'
+            ws.cell(row=1, column=insert_idx + 5).value = 'Product Width(in)'
+            ws.cell(row=1, column=insert_idx + 6).value = 'Product Depth(in)'
             
             ref_h = ws.cell(row=1, column=metric_cols[0])
-            for i in range(4):
+            for i in range(7):
                 nh = ws.cell(row=1, column=insert_idx + i)
                 if ref_h.has_style:
                     nh.font = copy.copy(ref_h.font); nh.border = copy.copy(ref_h.border)
                     nh.fill = copy.copy(ref_h.fill); nh.alignment = copy.copy(ref_h.alignment)
+            
+            actual_feat_col = feat_col_for_dims
+            if feat_col_for_dims and feat_col_for_dims >= insert_idx:
+                actual_feat_col = feat_col_for_dims + 7
                     
             for row in range(2, ws.max_row + 1):
                 if w_col:
@@ -672,6 +680,13 @@ def process_data_excel_only(data_file, is_us):
                     val = ws.cell(row=row, column=z_col).value
                     try: ws.cell(row=row, column=insert_idx + 3).value = round(float(val) * 0.393701, 2)
                     except: pass
+                if actual_feat_col:
+                    feat_val = ws.cell(row=row, column=actual_feat_col).value
+                    if feat_val:
+                        raw_h, raw_w, raw_d = extract_overall_dims(str(feat_val))
+                        ws.cell(row=row, column=insert_idx + 4).value = convert_to_inch(raw_h)
+                        ws.cell(row=row, column=insert_idx + 5).value = convert_to_inch(raw_w)
+                        ws.cell(row=row, column=insert_idx + 6).value = convert_to_inch(raw_d)
 
     headers = get_headers()
     img_cols = []
@@ -715,7 +730,8 @@ def process_data_excel_only(data_file, is_us):
     medium_border = Border(left=Side(style='medium', color='000000'), right=Side(style='medium', color='000000'), top=Side(style='medium', color='000000'), bottom=Side(style='medium', color='000000'))
     column_colors = {
         'Feature 1': "DDEBF7", 'Feature 2': "E2EFDA", 'Feature 3': "FFF2CC", 'Feature 4': "FCE4D6", 'Feature 5': "E8D8FC",
-        'WEIGHT (Lbs)': "F8CECC", 'PACKAGING SIZE - X (in)': "D1F2EB", 'PACKAGING SIZE - Y (in)': "E8F8F5", 'PACKAGING SIZE - Z (in)': "E6F2F7"
+        'WEIGHT (Lbs)': "F8CECC", 'PACKAGING SIZE - X (in)': "D1F2EB", 'PACKAGING SIZE - Y (in)': "E8F8F5", 'PACKAGING SIZE - Z (in)': "E6F2F7",
+        'Product Height(in)': "D1F2EB", 'Product Width(in)': "E8F8F5", 'Product Depth(in)': "E6F2F7"
     }
     
     headers = get_headers()
