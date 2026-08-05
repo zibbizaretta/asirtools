@@ -6,6 +6,7 @@ from openpyxl.styles import Alignment, Border, Side, Font, PatternFill
 import re
 import io
 import copy
+import urllib.parse
 
 # --- 1. HAFIZA (SESSION STATE) ---
 if 'user_prefs' not in st.session_state:
@@ -67,17 +68,64 @@ def translate_features(text, do_conversion):
     def c_in(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.393701, 2)}"
     def c_mm(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.0393701, 2)}"
     def c_kg(m): return f"{round(float(m.group(1).replace(',', '.')) * 2.20462, 2)}"
+    def c_gr(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.00220462, 2)} lbs"
     def c_ml(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.033814, 2)}"
 
     text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*cm(?![a-zA-Z])', lambda m: c_in(m) + ' inches', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*mm(?![a-zA-Z])', lambda m: c_mm(m) + ' inches', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*kg(?![a-zA-Z])', lambda m: c_kg(m) + ' lbs', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*(?:gram[s]?|gr\.?|g)(?![a-zA-Z0-9])', c_gr, text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*ml(?![a-zA-Z])', lambda m: c_ml(m) + ' fl oz', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z0-9:])(\d+(?:[\.,]\d+)?)(?=\s*[xX×]\s*\d)', c_in, text)
     text = re.sub(r'(?<![a-zA-Z])\bcm\b(?![a-zA-Z])', 'inches', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z])\bmm\b(?![a-zA-Z])', 'inches', text, flags=re.IGNORECASE)
     
     return text
+
+def extract_sku_urls(sku_key, row, df_data, img_cols):
+    clean_sku = str(sku_key).strip().lower()
+    
+    # Tüm SKU kümesini oluştur (diğer satırların resimlerinin karışmasını önlemek için)
+    all_skus = set(str(s).strip().lower() for s in df_data['CODE'].dropna().unique() if str(s).strip()) if 'CODE' in df_data.columns else set()
+    other_skus = all_skus - {clean_sku}
+    
+    row_urls = []
+    for col in img_cols:
+        val = str(row.get(col, '')).strip()
+        if val and val.lower() != 'nan' and (val.startswith('http') or val.startswith('www')):
+            row_urls.append(val)
+            
+    valid_urls = []
+    for url in row_urls:
+        unquoted = urllib.parse.unquote(url).lower()
+        belongs_to_other = any(other_sku in unquoted for other_sku in other_skus if len(other_sku) >= 4)
+        if clean_sku in unquoted or not belongs_to_other:
+            if url not in valid_urls:
+                valid_urls.append(url)
+                
+    # Eğer row içinde geçerli URL bulunamadıysa veya SKU URL içinde doğrudan bulunamadıysa global arama yap
+    if clean_sku and (not valid_urls or not any(clean_sku in urllib.parse.unquote(u).lower() for u in valid_urls)):
+        global_urls = []
+        for _, r in df_data.iterrows():
+            for col in img_cols:
+                val = str(r.get(col, '')).strip()
+                if val and val.lower() != 'nan' and (val.startswith('http') or val.startswith('www')):
+                    unquoted = urllib.parse.unquote(val).lower()
+                    if clean_sku in unquoted and val not in global_urls:
+                        global_urls.append(val)
+        if global_urls:
+            valid_urls = global_urls
+
+    def get_img_num(url):
+        unquoted = urllib.parse.unquote(url)
+        m = re.search(r'[\-_/\s](\d+)\.(?:jpg|jpeg|png|webp)', unquoted, re.IGNORECASE)
+        if m:
+            try: return int(m.group(1))
+            except: pass
+        return 999
+
+    valid_urls.sort(key=lambda u: get_img_num(u))
+    return valid_urls
 
 def calculate_freight_class_total(total_weight_lbs, total_volume_in3):
     vol_ft3 = total_volume_in3 / 1728
@@ -259,6 +307,11 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
         r4_lower = r4_val.lower()
         r1_lower = r1_val.lower()
 
+        if 'european article number' in r4_lower or 'europeanarticlenumber' in r1_lower or r4_lower == 'ean':
+            col_map['core::europeanArticleNumber'] = col_let
+        if 'universal product code' in r4_lower or 'universalproductcode' in r1_lower or r4_lower == 'upc':
+            col_map['core::universalProductCode'] = col_let
+
         if ('color' in r4_lower or 'colour' in r4_lower or r1_lower.endswith('::color')):
             if 'leg' not in r4_lower and 'base' not in r4_lower and 'shade' not in r4_lower: col_map['featureDescription::color'] = col_let
         if 'overall height' in r4_lower or 'overallheight' in r1_lower: col_map['featureDescription::overallHeight'] = col_let
@@ -324,8 +377,10 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
         
         if len(raw_cartons) > 1:
             prod_weight_lbs = max(0, round((sum(c['kg'] for c in raw_cartons) * 2.20462) - 5, 2))
+            prod_weight_kg = max(0, round(sum(c['kg'] for c in raw_cartons) - 2.0, 2))
         else:
             prod_weight_lbs = max(0, round((kg - 0.1) * 2.20462, 2)) if kg > 0.1 else 0
+            prod_weight_kg = max(0, round(kg - 0.05, 2)) if kg > 0.05 else 0
 
         try:
             feat_text = row.get('FEATURES', '')
@@ -351,6 +406,7 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 'core::supplierPartNumber': sku_key, 
                 'core::manufacturerPartNumber': sku_key, 
                 'core::universalProductCode': ean_str,
+                'core::europeanArticleNumber': ean_str,
                 'core::productName': b_info['new_name'] if b_info['new_name'] else row.get('DESCRIPTION'),
                 'price::wholesalePrice': row.get('PRICE'), 
                 'price::manufacturerSuggestedRetailPrice': row.get('RETAIL PRICE'),
@@ -377,22 +433,24 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
                 mappings['shippingAndFulfillment::productWeight'] = ""
                 mappings['featureDescription::overallProductWeight'] = ""
             else:
-                mappings['shippingAndFulfillment::weight'] = lbs
-                mappings['shippingAndFulfillment::height'] = x_in
-                mappings['shippingAndFulfillment::width'] = y_in
-                mappings['shippingAndFulfillment::depth'] = z_in
-                # Birebir Overall Product Weight ve normal weight'e yazılıyor
-                mappings['shippingAndFulfillment::productWeight'] = prod_weight_lbs
-                mappings['featureDescription::overallProductWeight'] = prod_weight_lbs
+                if ui_data['is_us']:
+                    mappings['shippingAndFulfillment::weight'] = lbs
+                    mappings['shippingAndFulfillment::height'] = x_in
+                    mappings['shippingAndFulfillment::width'] = y_in
+                    mappings['shippingAndFulfillment::depth'] = z_in
+                    mappings['shippingAndFulfillment::productWeight'] = prod_weight_lbs
+                    mappings['featureDescription::overallProductWeight'] = prod_weight_lbs
+                else:
+                    mappings['shippingAndFulfillment::weight'] = kg
+                    mappings['shippingAndFulfillment::height'] = x_cm
+                    mappings['shippingAndFulfillment::width'] = y_cm
+                    mappings['shippingAndFulfillment::depth'] = z_cm
+                    mappings['shippingAndFulfillment::productWeight'] = prod_weight_kg
+                    mappings['featureDescription::overallProductWeight'] = prod_weight_kg
 
-            urls = []
-            for col in df_data.columns:
-                col_str = str(col).lower()
-                if 'image' in col_str or 'resim' in col_str or 'url' in col_str or 'link' in col_str:
-                    if 'number' in col_str or 'sayı' in col_str or 'adet' in col_str: continue
-                    val = str(row.get(col, '')).strip()
-                    if val and val.lower() != 'nan' and (val.startswith('http') or val.startswith('www')) and val not in urls: 
-                        urls.append(val)
+            img_cols = [col for col in df_data.columns if ('image' in str(col).lower() or 'resim' in str(col).lower() or 'url' in str(col).lower() or 'link' in str(col).lower()) and not ('number' in str(col).lower() or 'sayı' in str(col).lower() or 'adet' in str(col).lower())]
+
+            urls = extract_sku_urls(sku_key, row, df_data, img_cols)
 
             for i in range(min(5, len(urls))): mappings[f'img_{i+1}'] = urls[i]
                 
@@ -488,10 +546,18 @@ def process_wayfair_v19(data_file, template_file, ui_data, carton_file=None, pro
 
     yellow_fill = openpyxl.styles.PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
     for c in range(1, ws_main.max_column + 1):
-        if str(ws_main.cell(row=3, column=c).value).strip().lower() == "required":
+        r1_val = str(ws_main.cell(row=1, column=c).value or "").strip().lower()
+        r3_val = str(ws_main.cell(row=3, column=c).value or "").strip().lower()
+        r4_val = str(ws_main.cell(row=4, column=c).value or "").strip().lower()
+
+        is_required = (r3_val == "required")
+        is_marketing_copy = ("marketingcopy" in r1_val or "romancecopy" in r1_val or "marketing copy" in r4_val or "romance copy" in r4_val)
+
+        if is_required or is_marketing_copy:
             for r in written_rows:
                 cell = ws_main.cell(row=r, column=c)
-                if cell.value is None or str(cell.value).strip() == "": cell.fill = yellow_fill
+                if cell.value is None or str(cell.value).strip() == "": 
+                    cell.fill = yellow_fill
 
     if additional_images_data:
         add_sheet = next((wb[s] for s in wb.sheetnames if 'additional' in s.lower() and 'image' in s.lower()), None)
@@ -782,11 +848,11 @@ with tab_wayfair:
 
     AUTO_MAPPED_COLS = {
         'core::supplierPartNumber', 'core::manufacturerPartNumber', 'core::universalProductCode',
-        'core::productName', 'featureDescription::romanceCopy', 'featureDescription::overallHeight',
-        'featureDescription::overallWidth', 'featureDescription::overallDepth', 'featureDescription::color',
-        'featureDescription::genericFeatures', 'shippingAndFulfillment::weight', 'shippingAndFulfillment::height',
-        'shippingAndFulfillment::width', 'shippingAndFulfillment::depth', 'price::wholesalePrice',
-        'price::manufacturerSuggestedRetailPrice', 'shippingAndFulfillment::minimumOrderQuantity',
+        'core::europeanArticleNumber', 'core::productName', 'featureDescription::romanceCopy', 
+        'featureDescription::overallHeight', 'featureDescription::overallWidth', 'featureDescription::overallDepth', 
+        'featureDescription::color', 'featureDescription::genericFeatures', 'shippingAndFulfillment::weight', 
+        'shippingAndFulfillment::height', 'shippingAndFulfillment::width', 'shippingAndFulfillment::depth', 
+        'price::wholesalePrice', 'price::manufacturerSuggestedRetailPrice', 'shippingAndFulfillment::minimumOrderQuantity',
         'shippingAndFulfillment::forceQuantityMultiplier', 'shippingAndFulfillment::displaySetQuantity',
         'shippingAndFulfillment::productWeight', 'featureDescription::overallProductWeight', 'shippingAndFulfillment::leadTime',
         'shippingAndFulfillment::replacementLeadTime', 'shippingAndFulfillment::shipType',
@@ -801,7 +867,8 @@ with tab_wayfair:
             'overall height', 'overall width', 'overall depth', 'overallheight', 
             'overallwidth', 'overalldepth', 'overall product weight', 'overallproductweight', 'color', 'colour', 'marketing copy', 
             'marketingcopy', 'set / single', 'bedding product type', 'bedding size', 
-            'bedding material', 'pieces included', 'total number of pieces included'
+            'bedding material', 'pieces included', 'total number of pieces included',
+            'european article number', 'europeanarticlenumber', 'universal product code', 'universalproductcode', 'ean', 'upc'
         }
         return f_low in exact_matches
 
@@ -848,12 +915,10 @@ with tab_wayfair:
             with cols_ui[idx % 3]:
                 if df_v is not None and fname in df_v.columns:
                     opts = list(dict.fromkeys([str(o).strip() for o in df_v[fname].dropna().unique() if str(o).strip() and str(o).strip() != 'None']))
-                    # GÜNCELLEME: "Select all" seçeneklerini ortadan kaldırıyoruz
                     opts = [o for o in opts if "select all" not in o.lower()]
                 else: 
                     opts = ["Yes", "No", "Does Not Apply"]
                     
-                # GÜNCELLEME: Custom değer için seçenek ekleme
                 opts.append("➕ Custom Value")
 
                 f_low = fname.lower()
@@ -861,7 +926,6 @@ with tab_wayfair:
                     def_val = []
                     if 'warning required' in f_low: def_val = ['No']
                     elif 'country of manufacturer' in f_low or 'country of origin' in f_low: 
-                        # GÜNCELLEME: Default Country -> Turkey
                         def_val = ['Turkey'] if 'Turkey' in opts else (['Türkiye'] if 'Türkiye' in opts else [])
                     elif 'uniform packaging and labeling regulations' in f_low: def_val = ['Yes']
                     elif 'reason for restriction' in f_low: def_val = ['Does Not Apply']
@@ -892,7 +956,6 @@ with tab_wayfair:
                 saved = st.session_state['user_prefs'].get(wid, [])
                 sel = st.multiselect(fname, options=opts, default=[x for x in saved if x in opts], key=f"sel_{wid}")
                 
-                # GÜNCELLEME: Eğer Custom Value seçildiyse text box göster
                 final_sel = list(sel)
                 if "➕ Custom Value" in final_sel:
                     custom_val = st.text_input(f"✍️ {fname} için Custom Değer Girin:", key=f"custom_{wid}")
