@@ -277,13 +277,13 @@ ATTR = {
     'carton_weight': '9037', 'carton_height': '9038', 'carton_width': '9039', 'carton_depth': '9040',
     'image': '9053',
     'overall_h': '769', 'overall_w': '770', 'overall_d': '771', 'overall_weight': '264',
+    'max_tv': '7845', 'product_type': '6109',
     'bed_set_single': '1295', 'bed_pieces': '521', 'bed_type': '8319', 'bed_size': '1791', 'bed_material': '4200',
 }
 MEDIA_IDS = {'9053', '9058', '9063', '9064', '9065', '9066'}
 # Ürün başına girilmemesi gereken / bot tarafından yönetilen diğer alanlar
 NON_FORM_IDS = {'9008', '9009', '9010', '9011', '9012', '9004', '9070', '9018', '9034', '9035', '9036', '9020'}
 CORE_REQUIRED = ['spn', 'name', 'base_cost', 'product_weight', 'carton_weight', 'image']
-US_LEAD_FALLBACK = {'lead_time': 600, 'repl_lead_time': 120}
 IMPERIAL_UNITS = {'pounds', 'inches', 'pound', 'inch', 'lbs'}
 METRIC_UNITS = {'kilogram', 'kilograms', 'centimetres', 'centimeters', 'centimetre', 'centimeter', 'grams'}
 CUSTOM_OPT = "➕ Custom Value"
@@ -424,10 +424,12 @@ def parse_template(wb, sheet_name=None):
         'max_col': ws.max_column,
     }
 
+FORM_ATTRS = {ATTR['lead_time'], ATTR['repl_lead_time'], ATTR['max_tv'], ATTR['product_type']}   # bot yönetir ama değeri formdan gelir
+
 def auto_keys(tpl):
     """Bot tarafından otomatik doldurulan sütunlar (formda gösterilmez)."""
-    keys = {col['key'] for col in tpl['columns']
-            if col['attr'] in set(ATTR.values()) or col['attr'] in MEDIA_IDS or col['attr'] in NON_FORM_IDS}
+    auto_attrs = (set(ATTR.values()) - FORM_ATTRS) | MEDIA_IDS | NON_FORM_IDS
+    keys = {col['key'] for col in tpl['columns'] if col['attr'] in auto_attrs}
     if tpl['color_key']:
         keys.add(tpl['color_key'])
     return keys
@@ -536,8 +538,6 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
         col = by_key.get(key)
         if col is None or _is_blank(value):
             return False
-        if skip_if_default and col['default'] is not None and _same_value(value, col['default']):
-            return False
         ws.cell(row=row, column=col['c']).value = value
         written_cells[(row, col['c'])] = current_sku[0]
         if col['idx']:
@@ -545,6 +545,10 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
         return True
 
     current_sku = ['']
+    gen_names, name_rows, name_src = {}, {}, {}
+    name_region = 'US' if is_us else 'UK'
+    tv_allowed = (by_key.get(ATTR['max_tv']) or {}).get('allowed')
+    type_hint = ui_data.get('answers', {}).get(ATTR['product_type']) or None
     for index, row in df_data.iterrows():
         if progress_callback: progress_callback((index + 1) / max(total_rows, 1))
         excel_row = int(row['__excel_row'])
@@ -597,22 +601,34 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
 
             color_val = str(row.get('COLOR', ''))
             if color_val.lower() == 'nan': color_val = ''
-            else: color_val = re.sub(r'\s*;\s*', '; ', color_val.replace('\n', ';').replace(',', ';').replace('/', ';')).strip('; ')
+            else: color_val = ';'.join(p.strip() for p in re.split(r'[\n;,/]+', color_val) if p.strip())
 
             auto_brand = get_brand_by_category(row.get(cat_col_name, '') if cat_col_name else '')
 
             g_satir += 1
             r_ = g_satir
+            name_src[sku_key] = {'NAME': '' if _is_blank(row.get('NAME')) else str(row.get('NAME')),
+                                 'DESCRIPTION': '' if _is_blank(row.get('DESCRIPTION')) else str(row.get('DESCRIPTION'))}
             put(r_, ATTR['spn'], sku_key)
             put(r_, ATTR['mpn'], sku_key)
             put(r_, ATTR['ean'], ean_str)
             put(r_, ATTR['upc'], ean_str)
-            put(r_, ATTR['name'], b_info['new_name'] if b_info['new_name'] else row.get('DESCRIPTION'))
+            if ui_data.get('auto_name', True):
+                gen_names[sku_key] = generate_product_name(row, name_region, {
+                    'type_hint': type_hint, 'tv_allowed': tv_allowed, 'raw_w': raw_w, 'b_material': b_info['material']})
+                name_rows[sku_key] = r_
+            else:
+                put(r_, ATTR['name'], b_info['new_name'] if b_info['new_name'] else row.get('DESCRIPTION'))
             put(r_, ATTR['base_cost'], row.get('PRICE'))
             put(r_, ATTR['msrp'], row.get('RETAIL PRICE'))
             if tpl['color_key']: put(r_, tpl['color_key'], color_val)
-            if auto_brand: put(r_, ATTR['brand'], auto_brand, skip_if_default=True)
-            for k in ('moq', 'fqm', 'dsq'): put(r_, ATTR[k], 1, skip_if_default=True)
+            # Marka: Data'daki BRAND Wayfair listesinde varsa o, yoksa kategori eşlemesi, o da yoksa template default
+            brand_col = by_key.get(ATTR['brand'])
+            brand_ok = lambda b: b and (not brand_col or not brand_col['allowed'] or b in brand_col['allowed'])
+            data_brand = '' if _is_blank(row.get('BRAND')) else str(row.get('BRAND')).strip()
+            brand_val = next((b for b in (data_brand, auto_brand, brand_col['default'] if brand_col else None) if brand_ok(b)), None)
+            put(r_, ATTR['brand'], brand_val)
+            for k in ('moq', 'fqm', 'dsq'): put(r_, ATTR[k], 1)
 
             conv_dim = (lambda v: cm2in(v) if v else None) if is_us else (lambda v: v)
             put(r_, ATTR['overall_h'], conv_dim(raw_h))
@@ -652,16 +668,10 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
                             is_ltl = True
                             break
                     if is_ltl:
-                        put(r_, ATTR['ship_type'], "LTL", skip_if_default=True)
+                        put(r_, ATTR['ship_type'], "LTL")
                         put(r_, ATTR['freight_class'], calculate_freight_class_total(total_lbs, total_vol_in3))
                     else:
-                        put(r_, ATTR['ship_type'], "Small Parcel", skip_if_default=True)
-
-            if is_us:
-                for k, v in US_LEAD_FALLBACK.items():
-                    col = by_key.get(ATTR[k])
-                    if col and col['default'] is None:
-                        put(r_, ATTR[k], v)
+                        put(r_, ATTR['ship_type'], "Small Parcel")
 
             # Görseller — artık ana sayfada, 30'a kadar
             urls = extract_sku_urls(sku_key, row, img_cols, url_ctx)
@@ -692,9 +702,12 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
                     warnings.append({'Ürün Kodu': sku_key, 'Alan': 'Feature Bullet',
                                      'Uyarı': f'{len(bullets)} bullet var — Wayfair ya Marketing Copy ya da en az 3 bullet istiyor'})
 
-            # Formdan gelen cevaplar (default ile aynıysa yazılmaz, Wayfair default'u uygular)
+            # Formdan gelen cevaplar — template'te default olsa bile her satıra yazılır
             for key, val in ui_data.get('answers', {}).items():
-                put(r_, key, val, skip_if_default=True)
+                put(r_, key, val)
+            # TV Stand: isimdeki "for TVs up to" ile özellik alanı aynı olsun
+            if sku_key in gen_names and gen_names[sku_key][1].get('tv_size'):
+                put(r_, ATTR['max_tv'], gen_names[sku_key][1]['tv_size'])
 
             processed += 1
             seen_skus.add(sku_key)
@@ -702,6 +715,21 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
 
         except Exception as e:
             errors.append({'Satır': excel_row, 'Ürün Kodu': sku_key, 'Açıklama': desc_short, 'Hata Detayı': str(e)})
+
+    # --- Ürün adları (aynı isimli SKU'lara renk eklenir) ---
+    final_names = finalize_names(gen_names, name_region) if gen_names else {}
+    name_report = []
+    for sku, nm in final_names.items():
+        current_sku[0] = sku
+        put(name_rows[sku], ATTR['name'], nm)
+        info = gen_names[sku][1]
+        src_row = name_src.get(sku, {})
+        name_report.append({'Ürün Kodu': sku, 'NAME (Data)': src_row.get('NAME', ''), 'DESCRIPTION (Data)': src_row.get('DESCRIPTION', ''),
+                            'Oluşturulan Product Name': nm, 'Karakter': len(nm)})
+        if info.get('type_source') == 'none':
+            warnings.append({'Ürün Kodu': sku, 'Alan': 'Product Name', 'Uyarı': 'Ürün tipi tanınamadı, açıklama olduğu gibi kullanıldı — kontrol edin'})
+        elif info.get('type_source') == 'template':
+            warnings.append({'Ürün Kodu': sku, 'Alan': 'Product Name', 'Uyarı': "Açıklamadaki tip belirsiz/tanınmadı, formdaki 'Product Type' cevabı kullanıldı — kontrol edin"})
 
     # --- Son işlemler ---
     # 1) Geçerli değer kontrolü (dropdown'lu alanlar)
@@ -725,7 +753,7 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
     yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
     empty_required = {}
     for col in tpl['columns']:
-        is_req = col['status'].lower() == 'required' and col['default'] is None
+        is_req = col['status'].lower() == 'required' and (not col['idx'] or col['idx'] == 1)
         is_mkt = col['attr'] == ATTR['marketing']
         if not (is_req or is_mkt):
             continue
@@ -768,9 +796,229 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
     return {
         'bytes': output.getvalue(), 'processed': processed, 'skipped': skipped, 'errors': errors,
         'warnings': warnings, 'empty_required': empty_required,
-        'missing_core': [n for n in missing_core], 'sheet_name': tpl['sheet_name'],
+        'missing_core': [n for n in missing_core], 'sheet_name': tpl['sheet_name'], 'names': name_report,
     }
 
+
+
+# --- 3b. ÜRÜN ADI ÜRETİCİ (Wayfair US / UK) ---
+# Wayfair'in kendi isimlendirme kalıbı: "{Model} {Ürün Tipi} {ayırt edici özellik}"
+#   ör. "Lowen TV Stand for TVs up to 78\"", "Bria Coffee Table with Storage", "Sheen 5 - Light Chandelier"
+# Marka isimde yer almaz (sitede ayrıca "By <Marka>" olarak gösterilir), SKU/kod yazılmaz.
+# Renk, sadece aynı ismi alan birden fazla SKU varsa sona ", Renk" olarak eklenir.
+
+NAME_MAX_LEN = 150
+
+# (regex, US karşılığı, UK karşılığı, belirsiz mi) — sıra önemli: daha spesifik olan önce
+PRODUCT_TYPE_MAP = [
+    (r'\btv\s*(?:stand|unit|cabinet|bench|table)\b|\bmedia\s*console\b', 'TV Stand', 'TV Stand', False),
+    (r'\bconsole\s*table\b', 'Console Table', 'Console Table', False),
+    (r'\bcoffee\s*table\b', 'Coffee Table', 'Coffee Table', False),
+    (r'\b(?:side|end)\s*table\b', 'End Table', 'Side Table', False),
+    (r'\bnight\s*stand\b|\bnightstand\b|\bbedside\s*(?:table|cabinet)?\b', 'Nightstand', 'Bedside Table', False),
+    (r'\bdining\s*table\b', 'Dining Table', 'Dining Table', False),
+    (r'\bdining\s*chair\b', 'Dining Chair', 'Dining Chair', False),
+    (r'\bdresser\b|\bchest\s*of\s*drawers\b', 'Dresser', 'Chest of Drawers', False),
+    (r'\bwardrobe\b|\barmoire\b', 'Armoire', 'Wardrobe', False),
+    (r'\bshoe\s*(?:cabinet|rack|storage)\b', 'Shoe Storage Cabinet', 'Shoe Storage Cabinet', False),
+    (r'\bbook\s*(?:case|shelf)\b|\bbookcase\b|\bbookshelf\b', 'Bookcase', 'Bookcase', False),
+    (r'\bwall\s*shel(?:f|ves)\b', 'Floating Wall Shelf', 'Floating Wall Shelf', False),
+    (r'\bcomputer\s*desk\b|\bdesk\b', 'Desk', 'Desk', False),
+    (r'\btoy\s*(?:cabinet|storage|organi[sz]er)\b', 'Toy Organizer', 'Toy Organiser', False),
+    (r'\bsideboard\b|\bbuffet\b|\bcredenza\b', 'Sideboard', 'Sideboard', False),
+    (r'\bconsole\b', 'Sideboard', 'Sideboard', True),
+    (r'\bsofa\s*bed\b', 'Sleeper Sofa', 'Sofa Bed', False),
+    (r'\bcorner\s*sofa\b|\bsectional\b', 'Sectional', 'Corner Sofa', False),
+    (r'\bsofa\b|\bcouch\b', 'Sofa', 'Sofa', False),
+    (r'\barm\s*chair\b|\barmchair\b|\bwingback\b', 'Accent Chair', 'Armchair', False),
+    (r'\bpouf+e?\b|\bottoman\b', 'Ottoman', 'Pouffe', False),
+    (r'\bbench\b', 'Bench', 'Bench', False),
+    (r'\b(?:quilt|duvet)\s*cover\s*set\b', 'Duvet Cover Set', 'Duvet Cover Set', False),
+    (r'\b(?:quilt|duvet)\s*cover\b', 'Duvet Cover', 'Duvet Cover', False),
+    (r'\bbedspread\b|\bcoverlet\b', 'Bedspread', 'Bedspread', False),
+    (r'\bsheet\s*set\b', 'Sheet Set', 'Sheet Set', False),
+    (r'\bfitted\s*sheet\b', 'Fitted Sheet', 'Fitted Sheet', False),
+    (r'\bpillow\s*cases?\b|\bpillowcases?\b', 'Pillowcase', 'Pillowcase', False),
+    (r'\bcomforter\b', 'Comforter', 'Duvet', False),
+    (r'\bthrow\s*blanket\b|\bblanket\b', 'Throw Blanket', 'Throw', False),
+    (r'\bbath\s*(?:mat|rug)\b', 'Bath Rug', 'Bath Mat', False),
+    (r'\brunner\b', 'Runner Rug', 'Runner Rug', False),
+    (r'\brug\b|\bcarpet\b|\bkilim\b', 'Area Rug', 'Rug', False),
+    (r'\btowel\s*set\b', 'Towel Set', 'Towel Set', False),
+    (r'\bbath\s*towel\b|\btowel\b', 'Bath Towel', 'Bath Towel', False),
+    (r'\bchandelier\b', 'Chandelier', 'Chandelier', False),
+    (r'\bpendant(?:\s*(?:lamp|light))?\b', 'Pendant', 'Pendant', False),
+    (r'\bfloor\s*lamp\b', 'Floor Lamp', 'Floor Lamp', False),
+    (r'\btable\s*lamp\b|\bdesk\s*lamp\b', 'Table Lamp', 'Table Lamp', False),
+    (r'\bwall\s*(?:lamp|light|sconce)\b|\bsconce\b', 'Wall Sconce', 'Wall Light', False),
+    (r'\bceiling\s*(?:lamp|light)\b|\bflush\s*mount\b', 'Flush Mount', 'Flush Ceiling Light', False),
+    (r'\bdinner\s*(?:set|ware\s*set)\b|\bdinnerware\b', 'Dinnerware Set', 'Dinner Set', False),
+    (r'\bdessert\s*plates?\b', 'Dessert Plate', 'Dessert Plate', False),
+    (r'\bplates?\b', 'Plate', 'Plate', False),
+    (r'\bmirror\b', 'Mirror', 'Mirror', False),
+    (r'\bcanvas\b|\bwall\s*(?:art|decor)\b|\bpainting\b|\bprint\b', 'Wall Art', 'Wall Art', False),
+]
+STORAGE_TYPES = {'Coffee Table', 'End Table', 'Side Table', 'Bench', 'Ottoman', 'Pouffe', 'Console Table'}
+LIGHT_TYPES = {'Chandelier', 'Pendant', 'Flush Mount', 'Flush Ceiling Light', 'Wall Sconce', 'Wall Light'}
+BEDDING_TYPES = {'Duvet Cover Set', 'Duvet Cover', 'Bedspread', 'Sheet Set', 'Fitted Sheet', 'Pillowcase', 'Comforter', 'Duvet'}
+
+# Yatak ölçüleri: kaynak (açıklamadaki etiket) -> hedef pazar
+US_SIZES = ['California King', 'King', 'Queen', 'Full', 'Twin XL', 'Twin']
+UK_SIZES = ['Super King', 'Emperor', 'King', 'Double', 'Small Double', 'Single']
+SIZE_US_TO_UK = {'Twin': 'Single', 'Twin XL': 'Single', 'Full': 'Double', 'Queen': 'King', 'King': 'Super King', 'California King': 'Super King'}
+SIZE_UK_TO_US = {'Single': 'Twin', 'Small Double': 'Full', 'Double': 'Full', 'King': 'Queen', 'Super King': 'King', 'Emperor': 'California King'}
+
+UK_SPELLING = [(r'\bGray\b', 'Grey'), (r'\bColor\b', 'Colour'), (r'\bCenter\b', 'Centre'), (r'\bOrganizer\b', 'Organiser')]
+US_SPELLING = [(r'\bGrey\b', 'Gray'), (r'\bColour\b', 'Color'), (r'\bCentre\b', 'Center'), (r'\bOrganiser\b', 'Organizer')]
+
+SMALL_WORDS = {'a', 'an', 'and', 'or', 'for', 'of', 'to', 'up', 'with', 'in', 'on', 'the', 'by'}
+
+def _title(s):
+    words = s.split()
+    out = []
+    for i, w in enumerate(words):
+        if i > 0 and w.lower() in SMALL_WORDS:
+            out.append(w.lower())
+        elif w.isupper() and len(w) <= 4:      # TV, LED, XL gibi kısaltmalar
+            out.append(w)
+        elif any(ch.isdigit() for ch in w) or '"' in w:
+            out.append(w)
+        else:
+            out.append(w[:1].upper() + w[1:].lower() if w.isupper() or w.islower() else w)
+    return ' '.join(out)
+
+def _clean_color(color_raw):
+    if _is_blank(color_raw):
+        return ''
+    parts = [p.strip() for p in re.split(r'[\n;,/]+', str(color_raw)) if p.strip()]
+    return '/'.join(dict.fromkeys(_title(p) for p in parts))
+
+def _detect_size(text):
+    """Açıklamadaki yatak ölçüsünü ve hangi sistemde yazıldığını bulur."""
+    t = ' ' + text + ' '
+    found_us = next((s for s in US_SIZES if re.search(r'\b' + s + r'\b', t, re.I)), None)
+    found_uk = next((s for s in UK_SIZES if re.search(r'\b' + s + r'\b', t, re.I)), None)
+    return found_us, found_uk
+
+def _strip_words(text, patterns):
+    for p in patterns:
+        text = re.sub(p, ' ', text, flags=re.I)
+    return re.sub(r'\s+', ' ', text).strip(' -,')
+
+def max_tv_size_from_width(width_cm, allowed):
+    """Standın genişliğine sığan en büyük 16:9 ekran (ekran genişliği = stand genişliği kabulüyle)."""
+    if not width_cm:
+        return None
+    diag = (width_cm / 2.54) / 0.8716
+    sizes = []
+    for a in (allowed or ['32"', '40"', '43"', '50"', '55"', '60"', '65"', '70"', '75"', '78"', '85"']):
+        m = re.match(r'(\d+)', str(a))
+        if m: sizes.append((int(m.group(1)), a))
+    fitting = [s for s in sorted(sizes) if s[0] <= diag]
+    return fitting[-1][1] if fitting else None
+
+def generate_product_name(row, region, ctx):
+    """region: 'US' veya 'UK'. ctx: {'type_hint', 'tv_allowed', 'raw_w', 'b_material'}.
+    Döner: (isim, bilgi dict)"""
+    info = {'type_matched': True, 'tv_size': None}
+    desc_raw = '' if _is_blank(row.get('DESCRIPTION')) else str(row.get('DESCRIPTION')).strip()
+    name_raw = '' if _is_blank(row.get('NAME')) else str(row.get('NAME')).strip()
+    color = _clean_color(row.get('COLOR'))
+
+    # Kaynak pazar etiketi: "(US)", "(UK)", "(EU)" ...
+    tag = re.search(r'\((US|UK|EU|GB|DE)\)', desc_raw, re.I)
+    src = tag.group(1).upper() if tag else None
+    desc = re.sub(r'\s*\([A-Z]{2,3}\)\s*', ' ', desc_raw).strip()
+
+    # Model adı: NAME = "Model - Renk"; NAME sadece renkse model yok
+    model = ''
+    if name_raw:
+        left = name_raw.split(' - ')[0].strip()
+        color_tokens = {c.strip().lower() for c in re.split(r'[\n;,/]+', str(row.get('COLOR') or '')) if c.strip()}
+        if left.lower() not in color_tokens and left.lower() != color.lower():
+            model = re.sub(r'(\s+\d+(?:[.,]\d+)?)+$', '', left).strip()     # "Vian 120" -> "Vian"
+    model = re.sub(r'\b[0-9]{2,}[A-Z]{2,}[0-9]+\b', '', model).strip()      # SKU benzeri kodları at
+
+    # Ürün tipi
+    us_i = 1 if region == 'US' else 2
+    ptype, ambiguous, matched_pat = None, False, None
+    for pat, us_t, uk_t, amb in PRODUCT_TYPE_MAP:
+        if re.search(pat, desc, re.I):
+            ptype, ambiguous, matched_pat = (us_t if region == 'US' else uk_t), amb, pat
+            break
+    hint = ctx.get('type_hint')
+    if (ptype is None or ambiguous) and hint:
+        ptype = hint
+    # Açıklamada tipten önce/sonra gelen nitelendiriciler (ör. "Washable", "Ranforce", "with Drawers")
+    pre, post = desc, ''
+    if matched_pat:
+        m = re.search(matched_pat, desc, re.I)
+        pre, post = desc[:m.start()], desc[m.end():]
+    junk = [r'\b' + s + r'\b' for s in US_SIZES + UK_SIZES] + [
+        r'\bsize\b', r'\bset\b(?=\s*$)',
+        r'\b\d+(?:[.,]\d+)?\s*(?:[xX×]\s*\d+(?:[.,]\d+)?\s*)+(?:cm|mm)?', r'\b\d+(?:[.,]\d+)?\s*(?:cm|mm)\b']
+    pre, post = _strip_words(pre, junk), _strip_words(post, junk)
+    if ptype is None:
+        info['type_source'] = 'none'
+        ptype, pre, post = (_title(_strip_words(desc, junk)) or 'Product'), '', ''
+    elif not matched_pat or ambiguous:
+        info['type_source'] = 'template'
+        if not matched_pat:
+            pre, post = '', ''
+    else:
+        info['type_source'] = 'description'
+    info['type_matched'] = info['type_source'] == 'description'
+
+    parts = []
+    if model: parts.append(model)
+    if pre: parts.append(pre)
+    if ptype in BEDDING_TYPES:
+        mat = ctx.get('b_material')
+        if mat and mat.lower() not in ' '.join(parts).lower(): parts.append(mat)
+        us_size, uk_size = _detect_size(desc)
+        if region == 'US':
+            size = us_size if (src in (None, 'US') and us_size) else (SIZE_UK_TO_US.get(uk_size) if uk_size else us_size)
+        else:
+            size = SIZE_US_TO_UK.get(us_size) if (src == 'US' and us_size) else (uk_size or (SIZE_US_TO_UK.get(us_size) if us_size else None))
+        if size: parts.append(size)
+        parts.append(ptype)
+        if post: parts.append(post)
+    else:
+        if ptype in LIGHT_TYPES:
+            m = re.search(r'(\d+)\s*(?:x\s*)?(?:bulbs?|lights?|lamps?|heads?|ampul)|(?:bulbs?|lights?)\s*:\s*(\d+)',
+                          str(row.get('FEATURES') or ''), re.I)
+            n_light = int(m.group(1) or m.group(2)) if m else 0
+            if n_light > 1:
+                parts.append(f"{n_light} - Light")
+        parts.append(ptype)
+        if ptype == 'TV Stand':
+            tv = max_tv_size_from_width(ctx.get('raw_w'), ctx.get('tv_allowed'))
+            if tv:
+                parts.append(f"for TVs up to {tv}")
+                info['tv_size'] = tv
+        if post: parts.append(post)
+        if ptype in STORAGE_TYPES and 'with' not in post.lower() and re.search(
+                r'\bdrawer|\bstorage\b|\bshel(?:f|ves)\b|\bcabinet|\bcompartment|\blift', str(row.get('FEATURES') or ''), re.I):
+            parts.append("with Storage")
+
+    name = _title(re.sub(r'\s+', ' ', ' '.join(parts)).strip())
+    for pat, rep in (US_SPELLING if region == 'US' else UK_SPELLING):
+        name = re.sub(pat, rep, name)
+    info['color'] = color
+    return name[:NAME_MAX_LEN].strip(), info
+
+def finalize_names(names, region):
+    """Aynı isim birden fazla SKU'da geçiyorsa sonuna renk ekler (Wayfair varyant gösterimiyle aynı: 'İsim, Renk')."""
+    from collections import Counter
+    counts = Counter(n for n, _ in names.values())
+    out = {}
+    for sku, (n, info) in names.items():
+        if counts[n] > 1 and info.get('color'):
+            n = f"{n}, {info['color']}"
+            for pat, rep in (US_SPELLING if region == 'US' else UK_SPELLING):
+                n = re.sub(pat, rep, n)
+        out[sku] = n[:NAME_MAX_LEN]
+    return out
 
 def process_data_excel_only(data_file, is_us):
     data_file.seek(0)
@@ -1006,6 +1254,39 @@ FALLBACK_DEFAULTS = [
     ('battery or batteries included', ['No']), ('additional intended use for child', ['No']),
 ]
 
+# Template'te Default Row boş gelse de kullanılacak sabit cevaplar (özellik ID'sine göre).
+# Kaynak: ASIR Group'un Wayfair US ve UK hesaplarındaki mevcut default cevaplar (Ekim 2026 template'leri).
+# Sadece template'teki geçerli değer listesinde varsa uygulanır.
+BUILTIN_DEFAULTS = {
+    'COMMON': {
+        '27': 'Non Residential Use;Residential Use', '28': 'Yes', '647': 'Turkey', '626': 'Single',
+        '1180': 'No', '1437': 'No Durability Features', '6753': '1', '282': 'No',
+        '283': 'Does Not Apply', '1881': 'Does Not Apply', '2663': 'Does Not Apply', '8380': 'No',
+        '9033': '120',
+    },
+    'US': {
+        '9032': '600', '9041': 'No', '11': 'No', '12': 'Does Not Apply', '13': 'Does Not Apply',
+        '31': 'Yes', '91': 'Yes', '117': 'No', '367': 'Yes', '699': 'Does Not Apply', '859': 'Does Not Apply',
+        '1168': 'Does Not Apply', '2376': 'Does Not Apply', '4357': 'Does Not Apply', '4449': 'Does Not Apply',
+        '5165': 'Does Not Apply', '4436': 'Does Not Apply', '7231': 'Does Not Apply', '7268': 'Does Not Apply',
+        '7966': 'Does Not Apply', '8364': 'Yes',
+    },
+    'EU': {
+        '9032': '24', '11': 'Does Not Apply', '2015': 'Does Not Apply', '3876': 'Yes', '8215': 'Does Not Apply',
+        '8471': 'REACH Compliant', '8479': 'EU General Product Safety Requirement Compliant',
+    },
+}
+
+def builtin_default(col, region):
+    val = BUILTIN_DEFAULTS.get(region or 'US', {}).get(col['attr']) or BUILTIN_DEFAULTS['COMMON'].get(col['attr'])
+    if val is None:
+        return None
+    if col['allowed']:
+        allowed_low = {a.lower() for a in col['allowed']}
+        if not all(p.strip().lower() in allowed_low for p in val.split(';')):
+            return None
+    return val
+
 @st.cache_data(show_spinner=False, max_entries=8)
 def load_template_info(t_bytes, sheet_name=None):
     wb = openpyxl.load_workbook(io.BytesIO(t_bytes))
@@ -1026,13 +1307,14 @@ def field_options(col, tpl):
         return None
     return list(dict.fromkeys(o for o in opts if o and o != 'None' and 'select all' not in o.lower()))
 
-def initial_value(col, opts, is_multi):
-    """Öncelik: bu oturumdaki son seçim > template Default Row > yedek öneriler."""
+def initial_value(col, opts, is_multi, region):
+    """Öncelik: bu oturumdaki son seçim > template Default Row > botun sabit cevapları > isim bazlı öneriler."""
     prefs = st.session_state['user_prefs']
     if col['key'] in prefs:
         return prefs[col['key']]
-    if col['default'] is not None:
-        return [p.strip() for p in col['default'].split(';')] if is_multi else [col['default']]
+    dv = col['default'] if col['default'] is not None else builtin_default(col, region)
+    if dv is not None:
+        return [p.strip() for p in dv.split(';')] if is_multi else [dv]
     f_low = col['name'].lower()
     for kw, val in FALLBACK_DEFAULTS:
         if kw in f_low:
@@ -1047,9 +1329,11 @@ def render_field(col, tpl):
     type_low = col['type'].lower()
     is_multi = type_low.startswith('please choose')
     wkey = f"ans_{tpl['class_id']}_{col['key']}"
-    label = col['name'] + (f"  ·  default: {col['default']}" if col['default'] else "")
+    label = col['name']
     help_txt = col['desc'][:400] if col['desc'] else None
-    init = initial_value(col, opts, is_multi)
+    init = initial_value(col, opts, is_multi, tpl['region'])
+    if col['default'] and opts and not all(p.strip() in opts for p in col['default'].split(';')):
+        st.caption(f"⚠️ {col['name']}: template default'u (\"{col['default']}\") Wayfair'in güncel listesinde yok, seçim yapın.")
 
     if opts is None:
         val = st.text_input(label, value=init[0] if init else "", key=wkey, help=help_txt)
@@ -1064,7 +1348,7 @@ def render_field(col, tpl):
         if CUSTOM_OPT in sel:
             custom = st.text_input(f"✍️ {col['name']} için Custom Değer", key=f"custom_{wkey}")
             if custom: final.append(custom.strip())
-        return "; ".join(final)
+        return ";".join(final)
 
     choices = [""] + opts + [CUSTOM_OPT]
     idx = choices.index(init[0]) if init and init[0] in choices else 0
@@ -1137,8 +1421,10 @@ with tab_wayfair:
         st.caption(f"📄 **{tpl['sheet_name']}**  ·  Pazar: **{tpl['country'] or '?'}** ({tpl['locale']})  ·  Birimler: **{unit_txt}**")
 
         a_keys = auto_keys(tpl)
+        has_default = lambda c: c['default'] is not None or builtin_default(c, tpl['region']) is not None
         form_cols = [c for c in tpl['columns']
-                     if c['status'].lower() == 'required' and c['key'] not in a_keys and c['attr'] not in MEDIA_IDS]
+                     if (c['status'].lower() == 'required' or has_default(c))
+                     and c['key'] not in a_keys and c['attr'] not in MEDIA_IDS and (c['idx'] is None or c['idx'] == 1)]
 
         st.markdown("---")
         st.subheader("📐 Özel Ölçü Sütun Eşleştirmeleri")
@@ -1154,14 +1440,14 @@ with tab_wayfair:
         selected_dim_keys = set(sum(dim_mappings.values(), []))
 
         form_cols = [c for c in form_cols if c['key'] not in selected_dim_keys]
-        need_cols = [c for c in form_cols if c['default'] is None]
-        default_cols = [c for c in form_cols if c['default'] is not None]
+        need_cols = [c for c in form_cols if not has_default(c)]
+        default_cols = [c for c in form_cols if has_default(c)]
 
         st.markdown("---")
         st.subheader(f"📋 {tpl['sheet_name']} — Doldurulması Gereken Özellikler")
         answers = {}
         if need_cols:
-            st.caption(f"Template'te varsayılanı olmayan {len(need_cols)} zorunlu alan. Boş bırakılanlar çıktıda sarı işaretlenir.")
+            st.caption(f"Varsayılan cevabı olmayan {len(need_cols)} alan. Boş bırakılanlar çıktıda sarı işaretlenir.")
             grid = st.columns(3)
             for i, col in enumerate(need_cols):
                 with grid[i % 3]:
@@ -1170,14 +1456,16 @@ with tab_wayfair:
             st.success("Tüm zorunlu alanların template'te varsayılanı var.")
 
         if default_cols:
-            with st.expander(f"⚙️ Varsayılanı olan alanlar ({len(default_cols)}) — sadece farklı bir değer gerekiyorsa değiştirin"):
-                st.caption("Wayfair, Default Row'daki (8. satır) değerleri tüm ürünlere otomatik uygular. "
-                           "Burada değiştirdiğiniz değer sadece bu dosyadaki ürün satırlarına yazılır, kategori varsayılanı değişmez.")
+            with st.expander(f"⚙️ Varsayılan cevabı olan alanlar ({len(default_cols)}) — kontrol edin, gerekirse değiştirin"):
+                st.caption("Cevaplar template'in Default Row'undan, yoksa botun sabit cevap listesinden gelir. "
+                           "Seçilen değer her ürün satırına ayrı ayrı yazılır.")
                 grid2 = st.columns(3)
                 for i, col in enumerate(default_cols):
                     with grid2[i % 3]:
                         answers[col['key']] = render_field(col, tpl)
 
+        st.markdown("---")
+        auto_name = st.toggle("🏷️ Product Name'i otomatik oluştur (Wayfair formatında, US / UK kurallarına göre)", value=True, key="auto_name")
         st.markdown("<br>", unsafe_allow_html=True)
         ready = bool(d_file) and teklif_ok
         if not teklif_ok:
@@ -1191,7 +1479,7 @@ with tab_wayfair:
         run_req = st.session_state.pop('wf_run', None)
         if run_req and ready:
             ui_data = {'is_us': run_req['is_us'], 'answers': {k: v for k, v in answers.items() if v},
-                       'dim_mappings': dim_mappings}
+                       'dim_mappings': dim_mappings, 'auto_name': auto_name}
             progress_bar = st.progress(0, text="Hazırlanıyor...")
             def update_progress(val): progress_bar.progress(min(val, 1.0), text=f"İşleniyor... %{int(val * 100)}")
             with st.spinner("Excel dosyası işleniyor..."):
@@ -1215,6 +1503,9 @@ with tab_wayfair:
             if res['empty_required']:
                 with st.expander(f"🟨 Boş kalan zorunlu alanlar — {len(res['empty_required'])} sütun (çıktıda sarı)", expanded=True):
                     st.dataframe(pd.DataFrame([{'Alan': k, 'Boş Ürün Sayısı': v} for k, v in res['empty_required'].items()]), width='stretch')
+            if res.get('names'):
+                with st.expander(f"🏷️ Oluşturulan Ürün Adları — {len(res['names'])}", expanded=True):
+                    st.dataframe(pd.DataFrame(res['names']), width='stretch', hide_index=True)
             if res['warnings']:
                 with st.expander(f"⚠️ Uyarılar — {len(res['warnings'])}", expanded=False):
                     st.dataframe(pd.DataFrame(res['warnings']), width='stretch')
