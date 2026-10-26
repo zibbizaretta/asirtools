@@ -30,6 +30,9 @@ def extract_overall_dims(text):
     if pd.isna(text):
         return None, None, None
     text = str(text)
+    # "Pile Height", "Leg Height", "Thickness" gibi satırlar ürünün genel ölçüsü değildir
+    text = '\n'.join(l for l in text.split('\n')
+                     if not re.search(r'\b(?:pile|leg|seat|shelf|arm|back|handle|lid)\s*height\b|thickness|kalınlık', l, re.I))
     
     dia = get_dim_val(r'(?:Diameter|Çap|Dia|Ø)\s*[:\-\s]\s*(\d+(?:[.,]\d+)?)', text)
     w = get_dim_val(r'(?:Width|Genişlik|Side to Side|\bW\b)\s*[:\-\s]\s*(\d+(?:[.,]\d+)?)', text)
@@ -58,28 +61,70 @@ def convert_to_inch(val):
         return round(val * 0.393701, 2)
     return None
 
+SYMBOLS_RE = re.compile(r'[®™©]')
+MATERIAL_WORDS = (r'polyester|cotton|wool|nylon|polypropylene|polyamide|jute|sisal|viscose|acrylic|microfib|chenille|'
+                  r'bamboo|linen|silk|velvet|leather|metal|steel|iron|alumin|wood|oak|pine|mdf|chipboard|particle|'
+                  r'glass|ceramic|porcelain|marble|stone|plastic|pvc|rattan|wicker|fabric|textile|elastane|spandex|'
+                  r'satin|ranforce|percale|flannel|fleece|foam|paper|canvas|resin|concrete|mirror|melamine|veneer')
+
+def _f(v):
+    return f"{round(v, 2):g}"
+
+def _n(s):
+    return float(str(s).replace(',', '.'))
+
+def clean_feature_text(text):
+    """Bölgeden bağımsız temizlik: ®/™ sembolleri, TAMAMI BÜYÜK HARF satırlar, materyal olmayan 'Material:' satırları."""
+    out = []
+    for line in str(text).split('\n'):
+        l = SYMBOLS_RE.sub('', line).strip()
+        if not l:
+            continue
+        letters = [ch for ch in l if ch.isalpha()]
+        if len(letters) > 3 and all(ch.isupper() for ch in letters):
+            l = ' '.join(w[:1].upper() + w[1:].lower() if w.isalpha() else w.capitalize() for w in l.split())
+        m = re.match(r'(?i)material\s*:\s*(.*)$', l)
+        if m and not re.search(MATERIAL_WORDS, m.group(1), re.I):
+            l = re.sub(r'^\d+(?:[.,]\d+)?\s*%\s*', '', m.group(1)).strip()   # "Material: 100% Non-Slip Dot Backing" -> "Non-Slip Dot Backing"
+        if l:
+            out.append(l)
+    return '\n'.join(out)
+
 def translate_features(text, do_conversion):
     if pd.isna(text): 
         return ""
     text = str(text)
     text = re.sub(r'Ø\s*[:\-]?\s*', 'Diameter: ', text)
     text = re.sub(r'(?i)\bÇap\s*[:\-]?\s*', 'Diameter: ', text)
+    text = clean_feature_text(text)
     
     if not do_conversion: 
         return text
 
-    def c_in(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.393701, 2)}"
-    def c_mm(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.0393701, 2)}"
-    def c_kg(m): return f"{round(float(m.group(1).replace(',', '.')) * 2.20462, 2)}"
-    def c_gr(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.00220462, 2)} lbs"
-    def c_ml(m): return f"{round(float(m.group(1).replace(',', '.')) * 0.033814, 2)}"
+    def c_in(m): return _f(_n(m.group(1)) * 0.393701)
+    def c_mm(m): return _f(_n(m.group(1)) * 0.0393701)
+    def c_kg(m): return _f(_n(m.group(1)) * 2.20462)
+    def c_gr(m): return f"{_f(_n(m.group(1)) * 0.00220462)} lbs"
+    def c_ml(m): return _f(_n(m.group(1)) * 0.033814)
+    NUM = r'(\d+(?:[\.,]\d+)?)'
 
-    text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*cm(?![a-zA-Z])', lambda m: c_in(m) + ' inches', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*mm(?![a-zA-Z])', lambda m: c_mm(m) + ' inches', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*kg(?![a-zA-Z])', lambda m: c_kg(m) + ' lbs', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*(?:gram[s]?|gr\.?|g)(?![a-zA-Z0-9])', c_gr, text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![a-zA-Z0-9])(\d+(?:[\.,]\d+)?)\s*ml(?![a-zA-Z])', lambda m: c_ml(m) + ' fl oz', text, flags=re.IGNORECASE)
-    text = re.sub(r'(?<![a-zA-Z0-9:])(\d+(?:[\.,]\d+)?)(?=\s*[xX×]\s*\d)', c_in, text)
+    # Gramaj: g/m² -> oz/yd² (lbs/m² gibi karışık birim üretmesin)
+    text = re.sub(NUM + r'\s*(?:grams?|gr|g)\.?\s*/\s*m(?:²|2)', lambda m: f"{round(_n(m.group(1)) * 0.0294935, 1):g} oz/yd²", text, flags=re.IGNORECASE)
+    text = re.sub(NUM + r'\s*gsm\b', lambda m: f"{round(_n(m.group(1)) * 0.0294935, 1):g} oz/yd²", text, flags=re.IGNORECASE)
+    # Aralıklar: "6 - 9 mm" -> iki uç da çevrilir
+    text = re.sub(NUM + r'\s*-\s*' + NUM + r'\s*(cm|mm)(?![a-zA-Z])',
+                  lambda m: f"{_f(_n(m.group(1)) * (0.393701 if m.group(3).lower() == 'cm' else 0.0393701))} - "
+                            f"{_f(_n(m.group(2)) * (0.393701 if m.group(3).lower() == 'cm' else 0.0393701))} inches",
+                  text, flags=re.IGNORECASE)
+    # Sıcaklık: °C -> °F
+    text = re.sub(NUM + r'\s*°\s*C\b', lambda m: f"{round(_n(m.group(1)) * 9 / 5 + 32)}°F", text)
+
+    text = re.sub(r'(?<![a-zA-Z0-9])' + NUM + r'\s*cm(?![a-zA-Z])', lambda m: c_in(m) + ' inches', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![a-zA-Z0-9])' + NUM + r'\s*mm(?![a-zA-Z])', lambda m: c_mm(m) + ' inches', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![a-zA-Z0-9])' + NUM + r'\s*kg(?![a-zA-Z])', lambda m: c_kg(m) + ' lbs', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![a-zA-Z0-9])' + NUM + r'\s*(?:gram[s]?|gr\.?|g)(?![a-zA-Z0-9/])', c_gr, text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![a-zA-Z0-9])' + NUM + r'\s*ml(?![a-zA-Z])', lambda m: c_ml(m) + ' fl oz', text, flags=re.IGNORECASE)
+    text = re.sub(r'(?<![a-zA-Z0-9:.])' + NUM + r'(?=\s*[xX×]\s*\d)', c_in, text)
     text = re.sub(r'(?<![a-zA-Z])\bcm\b(?![a-zA-Z])', 'inches', text, flags=re.IGNORECASE)
     text = re.sub(r'(?<![a-zA-Z])\bmm\b(?![a-zA-Z])', 'inches', text, flags=re.IGNORECASE)
     
@@ -278,6 +323,8 @@ ATTR = {
     'image': '9053',
     'overall_h': '769', 'overall_w': '770', 'overall_d': '771', 'overall_weight': '264',
     'max_tv': '7845', 'product_type': '6109',
+    'rug_shape': '3981', 'pile_height': '2499', 'overall_l': '1652', 'general_features': '8653',
+    'variant_type': '9009', 'group_ref': '9010', 'variant_grouping': '9011', 'variant_name': '9012',
     'bed_set_single': '1295', 'bed_pieces': '521', 'bed_type': '8319', 'bed_size': '1791', 'bed_material': '4200',
 }
 MEDIA_IDS = {'9053', '9058', '9063', '9064', '9065', '9066'}
@@ -287,6 +334,7 @@ CORE_REQUIRED = ['spn', 'name', 'base_cost', 'product_weight', 'carton_weight', 
 IMPERIAL_UNITS = {'pounds', 'inches', 'pound', 'inch', 'lbs'}
 METRIC_UNITS = {'kilogram', 'kilograms', 'centimetres', 'centimeters', 'centimetre', 'centimeter', 'grams'}
 CUSTOM_OPT = "➕ Custom Value"
+ACCEPTED_EXTRA_VALUES = {'multicolor'}   # Wayfair listede olmasa da kabul ediyor
 
 
 class TemplateFormatError(Exception):
@@ -424,7 +472,7 @@ def parse_template(wb, sheet_name=None):
         'max_col': ws.max_column,
     }
 
-FORM_ATTRS = {ATTR['lead_time'], ATTR['repl_lead_time'], ATTR['max_tv'], ATTR['product_type']}   # bot yönetir ama değeri formdan gelir
+FORM_ATTRS = {ATTR['lead_time'], ATTR['repl_lead_time'], ATTR['max_tv'], ATTR['product_type'], ATTR['general_features']}   # bot yönetir ama değeri formdan gelir
 
 def auto_keys(tpl):
     """Bot tarafından otomatik doldurulan sütunlar (formda gösterilmez)."""
@@ -545,9 +593,11 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
         return True
 
     current_sku = ['']
-    gen_names, name_rows, name_src = {}, {}, {}
+    gen_names, name_rows, name_src, rug_info, row_of = {}, {}, {}, {}, {}
+    variant_src = {}
     name_region = 'US' if is_us else 'UK'
     tv_allowed = (by_key.get(ATTR['max_tv']) or {}).get('allowed')
+    parent_col = next((c for c in df_data.columns if re.sub(r'[\s_]', '', str(c)).lower() in ('parentcode', 'parent', 'groupcode', 'groupreferenceid')), None)
     type_hint = ui_data.get('answers', {}).get(ATTR['product_type']) or None
     for index, row in df_data.iterrows():
         if progress_callback: progress_callback((index + 1) / max(total_rows, 1))
@@ -613,9 +663,15 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
             put(r_, ATTR['mpn'], sku_key)
             put(r_, ATTR['ean'], ean_str)
             put(r_, ATTR['upc'], ean_str)
+            rug = None
+            if re.search(r'\b(?:rugs?|carpets?|kilims?|runners?)\b', f"{row.get('DESCRIPTION', '')} {row.get(cat_col_name, '') if cat_col_name else ''}", re.I):
+                rug = parse_rug_size(feat_text, row.get('DESCRIPTION'))
+                if rug is None:
+                    warnings.append({'Ürün Kodu': sku_key, 'Alan': 'Halı Ölçüsü', 'Uyarı': 'Halı ölçüsü FEATURES/DESCRIPTION içinde bulunamadı'})
+            rug_info[sku_key] = rug
             if ui_data.get('auto_name', True):
                 gen_names[sku_key] = generate_product_name(row, name_region, {
-                    'type_hint': type_hint, 'tv_allowed': tv_allowed, 'raw_w': raw_w, 'b_material': b_info['material']})
+                    'type_hint': type_hint, 'tv_allowed': tv_allowed, 'raw_w': raw_w, 'b_material': b_info['material'], 'rug': rug})
                 name_rows[sku_key] = r_
             else:
                 put(r_, ATTR['name'], b_info['new_name'] if b_info['new_name'] else row.get('DESCRIPTION'))
@@ -631,9 +687,10 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
             for k in ('moq', 'fqm', 'dsq'): put(r_, ATTR[k], 1)
 
             conv_dim = (lambda v: cm2in(v) if v else None) if is_us else (lambda v: v)
-            put(r_, ATTR['overall_h'], conv_dim(raw_h))
-            put(r_, ATTR['overall_w'], conv_dim(raw_w))
-            put(r_, ATTR['overall_d'], conv_dim(raw_d))
+            if not rug:   # halı ölçüleri aşağıda ayrıca yazılıyor
+                put(r_, ATTR['overall_h'], conv_dim(raw_h))
+                put(r_, ATTR['overall_w'], conv_dim(raw_w))
+                put(r_, ATTR['overall_d'], conv_dim(raw_d))
             for dim_type, keys in ui_data.get('dim_mappings', {}).items():
                 val = conv_dim({'h': raw_h, 'w': raw_w, 'd': raw_d}[dim_type])
                 for k in keys: put(r_, k, val)
@@ -682,7 +739,11 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
                                  'Uyarı': f'{len(urls)} görsel var, template en fazla {len(image_cols_tpl)} alıyor'})
 
             # Feature Bullet'lar — 8'e kadar
-            satirlar = [s.strip() for s in translate_features(feat_text, is_us).split('\n') if s.strip()]
+            feat_for_bullets = feat_text
+            if is_us and rug and not _is_blank(feat_text):
+                lbl = rug_size_label(rug, 'US')
+                feat_for_bullets = re.sub(r'(?im)^\s*(?:Size|Diameter)\s*[:\-][^\n]*$', ('Diameter: ' if rug['round'] else 'Size: ') + lbl, str(feat_text))
+            satirlar = [s.strip() for s in translate_features(feat_for_bullets, is_us).split('\n') if s.strip()]
             bedding_note = generate_bedding_note(feat_text, raw_h, raw_w, b_info['bed_size'], is_us)
             all_feats = satirlar + ([bedding_note] if bedding_note else [])
             nb = len(bullet_cols)
@@ -705,6 +766,33 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
             # Formdan gelen cevaplar — template'te default olsa bile her satıra yazılır
             for key, val in ui_data.get('answers', {}).items():
                 put(r_, key, val)
+            # Halı: genişlik = kısa kenar, uzunluk = uzun kenar, çap varsa ikisi de çap; şekil ve hav yüksekliği ürün bazında
+            if rug:
+                for key, cm in ((ATTR['overall_w'], rug['short']), (ATTR['overall_l'], rug['long'])):
+                    col = by_key.get(key)
+                    if col: put(r_, key, cm_to_unit(cm, col['unit'] or ('Inches' if is_us else 'Centimetres')))
+                shape = rug_shape(rug)
+                sc = by_key.get(ATTR['rug_shape'])
+                if sc and (not sc['allowed'] or shape in sc['allowed']):
+                    put(r_, ATTR['rug_shape'], shape)
+            pc = by_key.get(ATTR['pile_height'])
+            if pc:
+                mm = parse_pile_height_mm(feat_text)
+                if mm: put(r_, ATTR['pile_height'], cm_to_unit(mm / 10, pc['unit'] or ('Inches' if is_us else 'Centimetres')))
+            if by_key.get(ATTR['rug_shape']) and _is_blank(ws.cell(r_, by_key[ATTR['rug_shape']]['c']).value):
+                put(r_, ATTR['rug_shape'], by_key[ATTR['rug_shape']]['default'])
+            gfc = by_key.get(ATTR['general_features'])
+            if gfc:
+                ftxt = f"{feat_text} {row.get('EXTRA FEATURES', '')}"
+                gf = [v for pat, v in ((r'non[\s-]*slip|anti[\s-]*slip', 'Non-Slip Backing'), (r'reversible', 'Reversible'),
+                                       (r'double[\s-]*sided|dual[\s-]*sided', 'Dual Sided'), (r'breathable', 'Breathable'))
+                      if re.search(pat, ftxt, re.I) and (not gfc['allowed'] or v in gfc['allowed'])]
+                if gf: put(r_, ATTR['general_features'], ';'.join(dict.fromkeys(gf)))
+            # Varyant gruplama için kaynak bilgi
+            if parent_col and not _is_blank(row.get(parent_col)):
+                variant_src[sku_key] = {'parent': str(row.get(parent_col)).strip(), 'color': color_val,
+                                        'size': rug_size_label(rug, name_region) if rug else ''}
+            row_of[sku_key] = r_
             # TV Stand: isimdeki "for TVs up to" ile özellik alanı aynı olsun
             if sku_key in gen_names and gen_names[sku_key][1].get('tv_size'):
                 put(r_, ATTR['max_tv'], gen_names[sku_key][1]['tv_size'])
@@ -731,6 +819,36 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
         elif info.get('type_source') == 'template':
             warnings.append({'Ürün Kodu': sku, 'Alan': 'Product Name', 'Uyarı': "Açıklamadaki tip belirsiz/tanınmadı, formdaki 'Product Type' cevabı kullanıldı — kontrol edin"})
 
+    # --- Varyant gruplama (Data'da ParentCode sütunu varsa) ---
+    if variant_src and ATTR['group_ref'] in by_key:
+        groups = {}
+        for sku, v in variant_src.items():
+            groups.setdefault(v['parent'], []).append(sku)
+        vg_allowed = (by_key.get(col_key(ATTR['variant_grouping'], 1)) or {}).get('allowed') or []
+        vt_col = by_key.get(ATTR['variant_type'])
+        size_attr = next((a for a in ('Rug Size', 'Size') if a in vg_allowed), 'Size')
+        for parent, skus in groups.items():
+            current_sku[0] = skus[0]
+            if len(skus) == 1:
+                put(row_of[skus[0]], ATTR['variant_type'], 'Not Variant')
+                continue
+            axes = []
+            if len({variant_src[s]['size'] for s in skus}) > 1 and all(variant_src[s]['size'] for s in skus):
+                axes.append((size_attr, 'size'))
+            if len({variant_src[s]['color'] for s in skus}) > 1:
+                axes.append(('Color', 'color'))
+            if not axes:
+                warnings.append({'Ürün Kodu': ', '.join(skus[:5]), 'Alan': 'Varyant', 'Uyarı': f'{parent} grubundaki ürünler ölçü/renk olarak ayrışmıyor — gruplanmadı'})
+                continue
+            for i, sku in enumerate(skus):
+                current_sku[0] = sku
+                r = row_of[sku]
+                put(r, ATTR['group_ref'], parent)
+                put(r, ATTR['variant_type'], 'Primary Variant' if i == 0 else 'Non-Primary Variant')
+                for j, (axis_name, field) in enumerate(axes[:2], start=1):
+                    put(r, col_key(ATTR['variant_grouping'], j), axis_name)
+                    put(r, col_key(ATTR['variant_name'], j), variant_src[sku][field].replace(';', '/'))
+
     # --- Son işlemler ---
     # 1) Geçerli değer kontrolü (dropdown'lu alanlar)
     cols_by_c = {col['c']: col for col in tpl['columns']}
@@ -742,7 +860,7 @@ def process_wayfair_v20(data_bytes, template_bytes, ui_data, carton_bytes=None, 
         allowed_low = {a.lower() for a in col['allowed']}
         val = str(ws.cell(r, c).value)
         parts = [p.strip() for p in val.split(';')] if col['type'].lower().startswith('please choose') else [val.strip()]
-        bad = [p for p in parts if p and p.lower() not in allowed_low]
+        bad = [p for p in parts if p and p.lower() not in allowed_low and p.lower() not in ACCEPTED_EXTRA_VALUES]
         if bad:
             invalid.setdefault((col['name'], '; '.join(bad)), []).append(sku)
     for (name, bad), skus in invalid.items():
@@ -871,7 +989,7 @@ SIZE_UK_TO_US = {'Single': 'Twin', 'Small Double': 'Full', 'Double': 'Full', 'Ki
 UK_SPELLING = [(r'\bGray\b', 'Grey'), (r'\bColor\b', 'Colour'), (r'\bCenter\b', 'Centre'), (r'\bOrganizer\b', 'Organiser')]
 US_SPELLING = [(r'\bGrey\b', 'Gray'), (r'\bColour\b', 'Color'), (r'\bCentre\b', 'Center'), (r'\bOrganiser\b', 'Organizer')]
 
-SMALL_WORDS = {'a', 'an', 'and', 'or', 'for', 'of', 'to', 'up', 'with', 'in', 'on', 'the', 'by'}
+SMALL_WORDS = {'a', 'an', 'and', 'or', 'for', 'of', 'to', 'up', 'with', 'in', 'on', 'the', 'by', 'x', 'cm'}
 
 def _title(s):
     words = s.split()
@@ -917,6 +1035,65 @@ def max_tv_size_from_width(width_cm, allowed):
     fitting = [s for s in sorted(sizes) if s[0] <= diag]
     return fitting[-1][1] if fitting else None
 
+
+# --- Halı yardımcıları ---
+RUG_TYPES = {'Area Rug', 'Rug', 'Runner Rug', 'Bath Rug', 'Bath Mat'}
+
+def cm_to_ftin(cm):
+    """80 cm -> 2'7\"  (Wayfair US halı ölçü formatı, inç aşağı yuvarlanır)"""
+    total_in = int(cm / 2.54 + 1e-6)
+    ft, inch = divmod(total_in, 12)
+    return f"{ft}'{inch}\"" if inch else f"{ft}'"
+
+def parse_rug_size(features, description):
+    """Döner: {'short','long','round'} (cm) veya None."""
+    feat = '' if _is_blank(features) else str(features)
+    desc = '' if _is_blank(description) else str(description)
+    NUM = r'(\d+(?:[.,]\d+)?)'
+    m = re.search(r'Size\s*[:\-]?\s*' + NUM + r'\s*(?:cm)?\s*[xX×]\s*' + NUM, feat, re.I) or \
+        re.search(NUM + r'\s*(?:cm)?\s*[xX×]\s*' + NUM, desc)
+    if m:
+        a, b = sorted([_n(m.group(1)), _n(m.group(2))])
+        return {'short': a, 'long': b, 'round': False}
+    m = re.search(r'(?:Diameter|Çap|Ø)\s*[:\-]?\s*' + NUM, feat + '\n' + desc, re.I) or \
+        re.search(r'\(\s*' + NUM + r'\s*cm\s*\)', desc, re.I)
+    if m:
+        d = _n(m.group(1))
+        return {'short': d, 'long': d, 'round': True}
+    return None
+
+def rug_shape(size):
+    if not size: return None
+    if size['round']: return 'Round'
+    if abs(size['long'] - size['short']) < 0.5: return 'Square'
+    if size['long'] / size['short'] >= 2.5: return 'Runner'
+    return 'Rectangle'
+
+def rug_size_label(size, region):
+    if not size: return ''
+    if region == 'US':
+        return cm_to_ftin(size['long']) if size['round'] else f"{cm_to_ftin(size['short'])} x {cm_to_ftin(size['long'])}"
+    return f"{size['long']:g} cm" if size['round'] else f"{size['short']:g} x {size['long']:g} cm"
+
+def parse_pile_height_mm(features):
+    t = '' if _is_blank(features) else str(features)
+    NUM = r'(\d+(?:[.,]\d+)?)'
+    m = re.search(r'Pile\s*Height\s*[:\-]?\s*' + NUM + r'(?:\s*-\s*' + NUM + r')?\s*(mm|cm)?', t, re.I)
+    if m:
+        v = _n(m.group(2) or m.group(1))
+        return v * 10 if (m.group(3) or 'mm').lower() == 'cm' else v
+    m = re.search(NUM + r'\s*mm\b[^\n]*(?:pile|profile|thick)', t, re.I) or \
+        re.search(r'(?:pile|thickness)[^\n]*?' + NUM + r'\s*mm\b', t, re.I)
+    return _n(m.group(1)) if m else None
+
+def cm_to_unit(cm, unit):
+    """Template sütununun birimine göre çevirir ([Inches] / [Centimetres] / [Millimetres])."""
+    if cm is None: return None
+    u = (unit or '').lower()
+    if u.startswith('inch'): return round(cm / 2.54, 2)
+    if u.startswith('millim'): return round(cm * 10, 1)
+    return round(cm, 2)
+
 def generate_product_name(row, region, ctx):
     """region: 'US' veya 'UK'. ctx: {'type_hint', 'tv_allowed', 'raw_w', 'b_material'}.
     Döner: (isim, bilgi dict)"""
@@ -938,6 +1115,7 @@ def generate_product_name(row, region, ctx):
         if left.lower() not in color_tokens and left.lower() != color.lower():
             model = re.sub(r'(\s+\d+(?:[.,]\d+)?)+$', '', left).strip()     # "Vian 120" -> "Vian"
     model = re.sub(r'\b[0-9]{2,}[A-Z]{2,}[0-9]+\b', '', model).strip()      # SKU benzeri kodları at
+    model = ' '.join(w for w in model.split() if not re.fullmatch(r'[A-Za-z]{2,}\d{2,}', w)).strip()   # "Woopamuk416" gibi kodlar
 
     # Ürün tipi
     us_i = 1 if region == 'US' else 2
@@ -958,6 +1136,7 @@ def generate_product_name(row, region, ctx):
         r'\bsize\b', r'\bset\b(?=\s*$)',
         r'\b\d+(?:[.,]\d+)?\s*(?:[xX×]\s*\d+(?:[.,]\d+)?\s*)+(?:cm|mm)?', r'\b\d+(?:[.,]\d+)?\s*(?:cm|mm)\b']
     pre, post = _strip_words(pre, junk), _strip_words(post, junk)
+    pre, post = (re.sub(r'\s+', ' ', re.sub(r'[()\[\]]', ' ', x)).strip(' -,') for x in (pre, post))
     if ptype is None:
         info['type_source'] = 'none'
         ptype, pre, post = (_title(_strip_words(desc, junk)) or 'Product'), '', ''
@@ -983,6 +1162,22 @@ def generate_product_name(row, region, ctx):
         if size: parts.append(size)
         parts.append(ptype)
         if post: parts.append(post)
+    elif ptype in RUG_TYPES and ctx.get('rug'):
+        rug = ctx['rug']
+        feats = str(row.get('FEATURES') or '') + ' ' + str(row.get('EXTRA FEATURES') or '')
+        if re.search(r'washable|wash\w*\s*(?:by|in)\s*(?:the\s*)?machine', feats, re.I) and 'washable' not in ' '.join(parts).lower():
+            parts.append('Machine Washable')
+        if re.search(r'non[\s-]*slip|anti[\s-]*slip', feats, re.I) and 'slip' not in ' '.join(parts).lower():
+            parts.append('Non-Slip')
+        shape = rug_shape(rug)
+        if shape == 'Runner' and ptype in ('Area Rug', 'Rug'):
+            ptype = 'Runner Rug'
+        elif shape in ('Round', 'Square') and ptype in ('Area Rug', 'Rug'):
+            parts.append(shape)
+        parts.append(ptype)
+        if post: parts.append(post)
+        info['size_label'] = rug_size_label(rug, region)
+        parts.append(info['size_label'])
     else:
         if ptype in LIGHT_TYPES:
             m = re.search(r'(\d+)\s*(?:x\s*)?(?:bulbs?|lights?|lamps?|heads?|ampul)|(?:bulbs?|lights?)\s*:\s*(\d+)',
